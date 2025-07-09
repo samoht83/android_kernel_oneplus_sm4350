@@ -54,7 +54,7 @@ jobs:
         # Using Projekt-Sapphire's maintained AOSP Clang prebuilts
         git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
         # Using Akhil Narang's binutils
-        # git clone https://github.com/akhilnarang/binutils.git --depth=1
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1
 
     - name: Set up Build Environment
       run: |
