@@ -15,7 +15,7 @@ on:
       DEFCONFIG:
         description: 'Defconfig name (e.g., holi_defconfig, sm4350_defconfig). VERIFY THIS!'
         required: true
-        default: 'holi_defconfig' # Common defconfig for SM4350, verify in kernel source
+        default: 'holi_QGKIconfig' # Common defconfig for SM4350, verify in kernel source
       ANYKERNEL3_BRANCH:
         description: 'AnyKernel3 branch'
         required: true
