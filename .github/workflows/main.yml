@@ -14,7 +14,7 @@ on:
       DEFCONFIG:
         description: 'Defconfig name (e.g., holi_defconfig, sm4350_defconfig)'
         required: true
-        default: 'holi_QGKIconfig'
+        default: 'holi_QGKI.config'
       ANYKERNEL3_BRANCH:
         description: 'AnyKernel3 branch'
         required: true
