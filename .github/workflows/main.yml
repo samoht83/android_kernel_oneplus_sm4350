@@ -104,7 +104,8 @@ jobs:
       working-directory: kernel
       run: |
         # Compile the kernel using all available CPU cores
-        make -j$(nproc) O=out
+        # In your kernel build config:
+make O=out ARCH=arm64 CC=clang LD=ld.lld LLVM=1 LLVM_IAS=1
 
     - name: Prepare AnyKernel3 Package
       working-directory: AnyKernel3
