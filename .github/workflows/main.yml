@@ -52,9 +52,9 @@ jobs:
     - name: Clone AOSP Clang Toolchain and Binutils
       run: |
         # Using Projekt-Sapphire's maintained AOSP Clang prebuilts
-        git clone https://gitlab.com/Projekt-Sapphire/google_prebuilts_clang_host_linux-x86.git clang --depth=1
+        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
         # Using Akhil Narang's binutils
-        git clone https://github.com/akhilnarang/binutils.git --depth=1
+        # git clone https://github.com/akhilnarang/binutils.git --depth=1
 
     - name: Set up Build Environment
       run: |
