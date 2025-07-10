@@ -44,7 +44,19 @@ jobs:
     - name: Install Build Dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip lld
+        sudo apt install -y \
+          build-essential \
+          flex \
+          bison \
+          libssl-dev \
+          libncurses5-dev \
+          git \
+          ccache \
+          lz4 \
+          python3 \
+          python3-pip \
+          lld \
+          llvm  # 🛠️ Fix: Install missing LLVM tools
 
     - name: Clone AOSP Clang Toolchain and Binutils
       run: |
@@ -72,6 +84,12 @@ jobs:
 
         ccache -M 20G
         ccache -z
+
+    - name: Verify LLVM Tools
+      run: |
+        which llvm-nm || echo "llvm-nm missing"
+        which llvm-ar || echo "llvm-ar missing"
+        which llvm-objdump || echo "llvm-objdump missing"
 
     - name: Integrate KernelSU
       working-directory: kernel
