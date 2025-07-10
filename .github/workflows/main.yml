@@ -44,7 +44,7 @@ jobs:
     - name: Install Build Dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip
+        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip lld
 
     - name: Clone AOSP Clang Toolchain and Binutils
       run: |
