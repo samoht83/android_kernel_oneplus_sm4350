@@ -110,7 +110,7 @@ jobs:
     - name: Build Kernel
       working-directory: kernel
       run: |
-        make O=out ARCH=arm64 CC=clang
+        make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1
 
     - name: Prepare AnyKernel3 Package
       working-directory: AnyKernel3
