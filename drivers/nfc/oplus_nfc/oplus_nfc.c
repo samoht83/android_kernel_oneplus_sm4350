@@ -125,7 +125,7 @@ static int oplus_nfc_probe(struct platform_device *pdev)
 		goto error_init;
 	}
     #if IS_MODULE(CONFIG_OPLUS_NFC)
-	project = get_project_in_gki_mode(void);
+	project = get_project_in_gki_mode();
     #else
 	project = get_project();
     #endif
