@@ -1,4 +1,4 @@
-/* Copyright (c) 2018-2021 The Linux Foundation. All rights reserved.
+* Copyright (c) 2018-2021 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -68,9 +68,9 @@ DATARMNET758a55f103
 #define DATARMNETbfe901fc62 (0xd2d+202-0xdf7)
 DEFINE_SPINLOCK(DATARMNET3764d083f0);DEFINE_HASHTABLE(DATARMNETe603c3a4b3,
 DATARMNET25437d35fd);struct DATARMNETe600c5b727 DATARMNET0997c5650d[
-DATARMNETc6782fed88];int DATARMNETcff375d916[DATARMNETc6782fed88];unsigned int 
-DATARMNETaf998640fd __read_mostly=(0xcb7+2213-0x123c);module_param(
-"\x4d\x61\x78\x20\x71\x6d\x61\x70\x20\x62\x61\x63\x6b\x6c\x6f\x67");struct 
+DATARMNETc6782fed88];int DATARMNETcff375d916[DATARMNETc6782fed88];unsigned int DATARMNETaf998640fd __read_mostly = (0xcb7+2213-0x123c);
+module_param(DATARMNETaf998640fd, int, 0644);
+MODULE_PARM_DESC(DATARMNETaf998640fd, "Max qmap backlog");struct 
 DATARMNETa6b20d7e8b DATARMNETecc0627c70;struct DATARMNET37ef896af8 shs_rx_work;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,4,0)
