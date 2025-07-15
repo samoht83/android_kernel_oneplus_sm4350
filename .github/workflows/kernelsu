@@ -21,9 +21,9 @@ jobs:
     - name: Set up Clang Toolchain
       run: |
         mkdir toolchain && cd toolchain
-        wget https://github.com/ClangBuiltLinux/tc-build/releases/download/20240505/clang+llvm-18.1.5-x86_64-linux-gnu.tar.xz
-        tar -xf clang+llvm-18.1.5-x86_64-linux-gnu.tar.xz
-        echo "TOOLCHAIN=$(pwd)/clang+llvm-18.1.5-x86_64-linux-gnu" >> $GITHUB_ENV
+                git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1
+        mv aarch64-linux-android-4.9 binutils >> $GITHUB_ENV
 
     - name: Clone KernelSU
       run: |
