@@ -1,0 +1,56 @@
+name: Build Nord N200 Kernel with KernelSU
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNELSU_BRANCH:
+        description: 'KernelSU branch to use (e.g., main, v0.9.5)'
+        required: true
+        default: 'main'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Kernel Source
+      uses: actions/checkout@v3
+      with:
+        path: kernel
+
+    - name: Set up Clang Toolchain
+      run: |
+        mkdir toolchain && cd toolchain
+        wget https://github.com/ClangBuiltLinux/tc-build/releases/download/20240505/clang+llvm-18.1.5-x86_64-linux-gnu.tar.xz
+        tar -xf clang+llvm-18.1.5-x86_64-linux-gnu.tar.xz
+        echo "TOOLCHAIN=$(pwd)/clang+llvm-18.1.5-x86_64-linux-gnu" >> $GITHUB_ENV
+
+    - name: Clone KernelSU
+      run: |
+        git clone --depth=1 -b ${{ github.event.inputs.KERNELSU_BRANCH }} https://github.com/KernelSU/KernelSU.git kernel/KernelSU
+        cd kernel
+        ./KernelSU/install.sh || echo "Manual integration fallback"
+
+    - name: Configure Kernel
+      run: |
+        cd kernel
+        make O=out ARCH=arm64 vendor/n200_defconfig
+
+    - name: Enable KernelSU in defconfig
+      run: |
+        echo "CONFIG_KERNELSU=y" >> kernel/out/.config
+        echo "CONFIG_KERNELSU_PATCHED=1" >> kernel/out/.config
+
+    - name: Compile Kernel
+      run: |
+        cd kernel
+        make -j$(nproc) O=out ARCH=arm64 \
+          CC=${{ env.TOOLCHAIN }}/bin/clang \
+          CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu-
+
+    - name: Upload Image.gz-dtb
+      uses: actions/upload-artifact@v3
+      with:
+        name: Image.gz-dtb
+        path: kernel/out/arch/arm64/boot/Image.gz-dtb
