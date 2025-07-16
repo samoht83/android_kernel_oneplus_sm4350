@@ -114,7 +114,7 @@ jobs:
       run: |
         make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error
 
-          - name: "💛 Upload Image"
+     - name: "💛 Upload Image"
         uses: actions/upload-artifact@v4
         with:
           name: Image(${{ env.kernelDevice }}-${{ env.kernelName }}-${{ env.kernelBranch }})
