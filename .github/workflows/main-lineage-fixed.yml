@@ -114,18 +114,34 @@ jobs:
       run: |
         make O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error
 
-    - name: Prepare AnyKernel3 Package
-      working-directory: AnyKernel3
-      run: |
-        cp ../kernel/out/arch/arm64/boot/Image.gz.
-        zip -r9 "AnyKernel3-NordN200-KernelSU-${{ github.run_id }}.zip" * -x .git README.md *placeholder
+          - name: "💛 Upload Image"
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image(${{ env.kernelDevice }}-${{ env.kernelName }}-${{ env.kernelBranch }})
+          path: ./${{ env.kernelDir }}/${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image
+          if-no-files-found: ignore
+          retention-days: 7
 
-    - name: Upload AnyKernel3 Package
-      uses: actions/upload-artifact@v4
-      with:
-        name: NordN200-KernelSU-Kernel
-        path: AnyKernel3/AnyKernel3-NordN200-KernelSU-*.zip
-        retention-days: 7
+      - name: "💙 Upload Image.gz"
+        uses: actions/upload-artifact@v4
+        with:
+          name: Image.gz(${{ env.kernelDevice }}-${{ env.kernelName }}-${{ env.kernelBranch }})
+          path: ./${{ env.kernelDir }}/${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/Image.gz
+          if-no-files-found: ignore
+          retention-days: 7
 
-    - name: Display Ccache Statistics
-      run: ccache -s
+      - name: "💜 Upload dtb"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtb(${{ env.kernelDevice }}-${{ env.kernelName }}-${{ env.kernelBranch }})
+          path: ./${{ env.kernelDir }}/${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/dtb
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: "❤️ Upload dtbo.img"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbo.img(${{ env.kernelDevice }}-${{ env.kernelName }}-${{ env.kernelBranch }})
+          path: ./${{ env.kernelDir }}/${{ env.OUT_DIR }}/arch/${{ env.ARCH }}/boot/dtbo.img
+          if-no-files-found: ignore
+          retention-days: 7
