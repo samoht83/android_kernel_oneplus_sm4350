@@ -117,7 +117,7 @@ jobs:
     - name: Prepare AnyKernel3 Package
       working-directory: AnyKernel3
       run: |
-        cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
+        cp ../kernel/out/arch/arm64/boot/Image.gz.
         zip -r9 "AnyKernel3-NordN200-KernelSU-${{ github.run_id }}.zip" * -x .git README.md *placeholder
 
     - name: Upload AnyKernel3 Package
