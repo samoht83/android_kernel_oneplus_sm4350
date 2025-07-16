@@ -60,7 +60,7 @@ jobs:
         path: |
           clang
           binutils
-        key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }} # You might want to create a file to track toolchain versions
+        key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }} 
 
     - name: Clone AOSP Clang Toolchain and Binutils
       if: steps.cache-toolchain.outputs.cache-hit != 'true'
