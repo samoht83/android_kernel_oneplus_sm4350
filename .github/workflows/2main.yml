@@ -67,15 +67,41 @@ jobs:
 
     - name: 🧰 Setup LLVM/Clang Toolchain
       run: |
-        # Use APT repository for more reliable installation
-        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-        sudo add-apt-repository "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-18 main"
-        sudo apt update
-        sudo apt install -y clang-18 lldb-18 lld-18
+        # Method 1: Try Ubuntu's native LLVM packages first
+        if sudo apt install -y clang-18 lld-18 llvm-18; then
+          echo "✅ Using Ubuntu's native LLVM packages"
+          echo "CLANG_PATH=/usr/lib/llvm-18" >> $GITHUB_ENV
+          echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
+        else
+          echo "❌ Native packages failed, trying LLVM repository..."
+          
+          # Method 2: Use correct Noble repository
+          sudo rm -f /etc/apt/sources.list.d/archive_uri-http_apt_llvm_org_focal_-noble.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt update
+          
+          if sudo apt install -y clang-18 lld-18 llvm-18; then
+            echo "✅ Using LLVM.org repository"
+            echo "CLANG_PATH=/usr/lib/llvm-18" >> $GITHUB_ENV
+            echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
+          else
+            echo "❌ LLVM repository also failed, downloading prebuilt..."
+            
+            # Method 3: Download prebuilt binaries as fallback
+            mkdir -p toolchains && cd toolchains
+            wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04 llvm-18
+            echo "CLANG_PATH=$(pwd)/llvm-18" >> $GITHUB_ENV
+            echo "$(pwd)/llvm-18/bin" >> $GITHUB_PATH
+            cd ..
+            echo "✅ Using prebuilt LLVM binaries"
+          fi
+        fi
         
-        # Set up environment
-        echo "CLANG_PATH=/usr/lib/llvm-18" >> $GITHUB_ENV
-        echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
+        # Verify installation
+        clang-18 --version || clang --version
 
     - name: 💉 Clone KernelSU
       run: |
@@ -124,26 +150,55 @@ jobs:
 
     - name: 🧱 Build Kernel
       run: |
+        # Determine available clang version
+        if command -v clang-18 &> /dev/null; then
+          CLANG_CMD="clang-18"
+          CLANGXX_CMD="clang++-18"
+          LLD_CMD="ld.lld-18"
+          LLVM_AR_CMD="llvm-ar-18"
+          LLVM_NM_CMD="llvm-nm-18"
+          LLVM_OBJCOPY_CMD="llvm-objcopy-18"
+          LLVM_OBJDUMP_CMD="llvm-objdump-18"
+          LLVM_READELF_CMD="llvm-readelf-18"
+          LLVM_SIZE_CMD="llvm-size-18"
+          LLVM_STRIP_CMD="llvm-strip-18"
+          LLVM_DIS_CMD="llvm-dis-18"
+        else
+          CLANG_CMD="clang"
+          CLANGXX_CMD="clang++"
+          LLD_CMD="ld.lld"
+          LLVM_AR_CMD="llvm-ar"
+          LLVM_NM_CMD="llvm-nm"
+          LLVM_OBJCOPY_CMD="llvm-objcopy"
+          LLVM_OBJDUMP_CMD="llvm-objdump"
+          LLVM_READELF_CMD="llvm-readelf"
+          LLVM_SIZE_CMD="llvm-size"
+          LLVM_STRIP_CMD="llvm-strip"
+          LLVM_DIS_CMD="llvm-dis"
+        fi
+        
+        echo "Using Clang: $($CLANG_CMD --version | head -1)"
+        
         make O=out \
           ARCH=$ARCH \
           SUBARCH=$SUBARCH \
           CLANG_TRIPLE=$CLANG_TRIPLE \
           CROSS_COMPILE=$CROSS_COMPILE \
           CROSS_COMPILE_COMPAT=$CROSS_COMPILE_COMPAT \
-          CC=clang-18 \
-          HOSTCC=clang-18 \
-          HOSTCXX=clang++-18 \
-          LD=ld.lld-18 \
-          AR=llvm-ar-18 \
-          NM=llvm-nm-18 \
-          OBJCOPY=llvm-objcopy-18 \
-          OBJDUMP=llvm-objdump-18 \
-          READELF=llvm-readelf-18 \
-          OBJSIZE=llvm-size-18 \
-          STRIP=llvm-strip-18 \
-          LLVM_AR=llvm-ar-18 \
-          LLVM_DIS=llvm-dis-18 \
-          LLVM_NM=llvm-nm-18 \
+          CC=$CLANG_CMD \
+          HOSTCC=$CLANG_CMD \
+          HOSTCXX=$CLANGXX_CMD \
+          LD=$LLD_CMD \
+          AR=$LLVM_AR_CMD \
+          NM=$LLVM_NM_CMD \
+          OBJCOPY=$LLVM_OBJCOPY_CMD \
+          OBJDUMP=$LLVM_OBJDUMP_CMD \
+          READELF=$LLVM_READELF_CMD \
+          OBJSIZE=$LLVM_SIZE_CMD \
+          STRIP=$LLVM_STRIP_CMD \
+          LLVM_AR=$LLVM_AR_CMD \
+          LLVM_DIS=$LLVM_DIS_CMD \
+          LLVM_NM=$LLVM_NM_CMD \
           LLVM=1 \
           -j$(nproc)
 
