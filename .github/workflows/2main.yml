@@ -134,14 +134,14 @@ jobs:
     - name: 🔧 Generate Kernel Config
       run: |
         # Check if defconfig exists
-        if [ ! -f "arch/arm64/configs/vendor/nordn200_defconfig" ]; then
+        if [ ! -f "arch/arm64/configs/vendor/holi-qgki_defconfig" ]; then
           echo "❌ defconfig not found at expected path"
           echo "Available defconfigs:"
           find arch/arm64/configs -name "*defconfig" | head -10
           exit 1
         fi
         
-        make O=out vendor/nordn200_defconfig
+        make O=out vendor/holi-qgki_defconfig
         
         # Enable KernelSU in config
         echo "CONFIG_KPROBES=y" >> out/.config
