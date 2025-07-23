@@ -13,6 +13,13 @@ jobs:
       with:
         fetch-depth: 1
 
+    - name: Add LLVM APT repository
+      run: | 
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb http://apt.llvm.org/focal/ llvm-toolchain-focal-18 main"
+        sudo apt update
+        sudo apt install clang-18 lldb-18 lld-18
+
     - name: 🛠️ Install Dependencies
       run: |
         sudo apt update
