@@ -10,7 +10,7 @@ on:
       kernel_branch:
         description: 'Kernel branch'
         required: false
-        default: 'main'
+        default: 'lineage-22.2'
       kernelsu_version:
         description: 'KernelSU version'
         required: false
