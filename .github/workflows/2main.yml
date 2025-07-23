@@ -3,8 +3,12 @@ name: Build Android Kernel with KernelSU v0.9.5
 on:
   workflow_dispatch:
     inputs:
-      kernel_version:
-        description: 'Kernel version tag (optional)'
+      kernel_repo:
+        description: 'Kernel repository URL'
+        required: true
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350.git'
+      kernel_branch:
+        description: 'Kernel branch'
         required: false
         default: 'main'
       kernelsu_version:
@@ -17,11 +21,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-    - name: 📥 Checkout Kernel Source
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
-        ref: ${{ github.event.inputs.kernel_version }}
+    - name: 📥 Clone Kernel Source
+      run: |
+        echo "Cloning kernel source from: ${{ github.event.inputs.kernel_repo }}"
+        BRANCH="${{ github.event.inputs.kernel_branch }}"
+        
+        # Clone with fallback branches
+        if ! git clone --depth=1 --branch=$BRANCH ${{ github.event.inputs.kernel_repo }} .; then
+          echo "Failed to clone branch $BRANCH, trying alternatives..."
+          for alt_branch in master main android-11 android-12 lineage-18.1; do
+            echo "Trying branch: $alt_branch"
+            if git clone --depth=1 --branch=$alt_branch ${{ github.event.inputs.kernel_repo }} .; then
+              echo "✅ Successfully cloned with branch $alt_branch"
+              break
+            fi
+          done
+        fi
+        
+        # Verify kernel source structure
+        if [ ! -f "Makefile" ] || [ ! -d "arch/arm64" ]; then
+          echo "❌ Invalid kernel source structure"
+          ls -la
+          exit 1
+        fi
+        
+        echo "✅ Kernel source ready"
 
     - name: 🔧 Setup Build Environment
       run: |
