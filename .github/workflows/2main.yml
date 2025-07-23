@@ -22,9 +22,9 @@ jobs:
     - name: 🧰 Setup Clang Toolchain
       run: |
         mkdir -p toolchains && cd toolchains
-        wget https://github.com/ClangBuiltLinux/tc-build/releases/download/2023.12.01/clang+llvm-17.0.6-x86_64.tar.xz
-        tar -xf clang+llvm-17.0.6-x86_64.tar.xz
-        echo "CLANG_PATH=$(pwd)/clang+llvm-17.0.6-x86_64" >> $GITHUB_ENV
+        wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.6/clang+llvm-18.1.6-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+        tar -xf clang+llvm-18.1.6-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+        echo "CLANG_PATH=$(pwd)/clang+llvm-18.1.6-x86_64-linux-gnu-ubuntu-20.04" >> $GITHUB_ENV
 
     - name: 💉 Clone KernelSU v0.9.5
       run: |
