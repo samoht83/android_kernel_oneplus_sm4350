@@ -1,4 +1,4 @@
-name: Build Android Kernel with KernelSU v0.9.5 and Create boot.img
+name: Build boot Android Kernel with KernelSU v0.9.5 and Create boot.img
 
 on:
   workflow_dispatch:
