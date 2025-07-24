@@ -268,7 +268,7 @@ jobs:
 
         mkdir -p boot-output
 
-        if [ -f "original_boot.img" ]; then
+        if [ -f "boot.img" ]; then
           echo "📦 Creating boot.img using original boot image as base..."
 
           # Extract original boot.img
