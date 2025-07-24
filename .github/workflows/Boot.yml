@@ -68,7 +68,7 @@ jobs:
           libelf-dev libncurses-dev lzop python3 git wget unzip \
           device-tree-compiler cpio kmod zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-          python3-pip android-tools-mkbootimg
+          python3-pip mkbootimg
 
     - name: 🧰 Setup LLVM/Clang Toolchain
       run: |
