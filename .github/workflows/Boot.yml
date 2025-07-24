@@ -1,0 +1,437 @@
+name: Build boot Android Kernel with KernelSU v0.9.5 and Create boot.img
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'Kernel repository URL'
+        required: true
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350.git'
+      kernel_branch:
+        description: 'Kernel branch'
+        required: false
+        default: 'lineage-22.2'
+      kernelsu_version:
+        description: 'KernelSU version'
+        required: false
+        default: 'v0.9.5'
+      boot_img_url: 
+        description: 'Original boot.img URL (optional - for creating boot.img)'
+        required: false
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/blob/lineage-22.2/arch/arm64/boot/boot.img'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: 📥 Clone Kernel Source
+      run: |
+        echo "Cloning kernel source from: ${{ github.event.inputs.kernel_repo }}"
+        BRANCH="${{ github.event.inputs.kernel_branch }}"
+
+        # Clone with fallback branches
+        if ! git clone --depth=1 --branch=$BRANCH ${{ github.event.inputs.kernel_repo }} .; then
+          echo "Failed to clone branch $BRANCH, trying alternatives..."
+          for alt_branch in master main android-11 android-12 lineage-18.1; do
+            echo "Trying branch: $alt_branch"
+            if git clone --depth=1 --branch=$alt_branch ${{ github.event.inputs.kernel_repo }} .; then
+              echo "✅ Successfully cloned with branch $alt_branch"
+              break
+            fi
+          done
+        fi
+
+        # Verify kernel source structure
+        if [ ! -f "Makefile" ] || [ ! -d "arch/arm64" ]; then
+          echo "❌ Invalid kernel source structure"
+          ls -la
+          exit 1
+        fi
+
+        echo "✅ Kernel source ready"
+
+    - name: 🔧 Setup Build Environment
+      run: |
+        # Free up disk space
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo apt clean
+        df -h
+
+        # Update package lists
+        sudo apt update
+
+    - name: 🛠️ Install Build Dependencies
+      run: |
+        sudo apt install -y \
+          build-essential bc bison flex libssl-dev ccache \
+          libelf-dev libncurses-dev lzop python3 git wget unzip \
+          device-tree-compiler cpio kmod zip \
+          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+          python3-pip android-tools-mkbootimg
+
+    - name: 🧰 Setup LLVM/Clang Toolchain
+      run: |
+        # Method 1: Try Ubuntu's native LLVM packages first
+        if sudo apt install -y clang-18 lld-18 llvm-18; then
+          echo "✅ Using Ubuntu's native LLVM packages"
+          echo "CLANG_PATH=/usr/lib/llvm-18" >> $GITHUB_ENV
+          echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
+        else
+          echo "❌ Native packages failed, trying LLVM repository..."
+
+          # Method 2: Use correct Noble repository
+          sudo rm -f /etc/apt/sources.list.d/archive_uri-http_apt_llvm_org_focal_-noble.list
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt update
+
+          if sudo apt install -y clang-18 lld-18 llvm-18; then
+            echo "✅ Using LLVM.org repository"
+            echo "CLANG_PATH=/usr/lib/llvm-18" >> $GITHUB_ENV
+            echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
+          else
+            echo "❌ LLVM repository also failed, downloading prebuilt..."
+
+            # Method 3: Download prebuilt binaries as fallback
+            mkdir -p toolchains && cd toolchains
+            wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04 llvm-18
+            echo "CLANG_PATH=$(pwd)/llvm-18" >> $GITHUB_ENV
+            echo "$(pwd)/llvm-18/bin" >> $GITHUB_PATH
+            cd ..
+            echo "✅ Using prebuilt LLVM binaries"
+          fi
+        fi
+
+        # Verify installation
+        clang-18 --version || clang --version
+
+    - name: 🛠️ Setup Boot Image Tools
+      run: |
+        # Install AIK (Android Image Kitchen) for boot.img manipulation
+        mkdir -p boot-tools && cd boot-tools
+
+        # Download and setup mkbootimg tools
+        git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
+        chmod +x mkbootimg/*
+        echo "$(pwd)/mkbootimg" >> $GITHUB_PATH
+
+        # Install magiskboot as alternative
+        wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+        unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
+        mv lib/x86_64/libmagiskboot.so magiskboot
+        chmod +x magiskboot
+        echo "$(pwd)" >> $GITHUB_PATH
+
+        cd ..
+        echo "✅ Boot image tools ready"
+
+    - name: 💉 Clone KernelSU
+      run: |
+        git clone --depth=1 -b ${{ github.event.inputs.kernelsu_version }} https://github.com/tiann/KernelSU
+        echo "KERNELSU_PATH=$(pwd)/KernelSU" >> $GITHUB_ENV
+
+    - name: 🔀 Integrate KernelSU
+      run: |
+        cd $GITHUB_WORKSPACE
+        echo "Applying KernelSU patch..."
+        if [ -f "KernelSU/kernel/setup.sh" ]; then
+          # Use new integration method if available
+          bash KernelSU/kernel/setup.sh
+        else
+          # Fallback to old method
+          bash KernelSU/tools/merge_kernel.sh $(pwd)
+        fi
+
+    - name: ⚙️ Configure Kernel Build Environment
+      run: |
+        # Export build variables
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_COMPAT=arm-linux-gnueabi-" >> $GITHUB_ENV
+        echo "KBUILD_BUILD_USER=GitHub-Actions" >> $GITHUB_ENV
+        echo "KBUILD_BUILD_HOST=GitHub" >> $GITHUB_ENV
+
+    - name: 🔧 Generate Kernel Config
+      run: |
+        # Check if defconfig exists
+        if [ ! -f "arch/arm64/configs/dre_defconfig" ]; then
+          echo "❌ defconfig not found at expected path"
+          echo "Available defconfigs:"
+          find arch/arm64/configs -name "*defconfig" | head -10
+          exit 1
+        fi
+
+        make O=out dre_defconfig
+
+        # Enable KernelSU in config
+        echo "CONFIG_KPROBES=y" >> out/.config
+        echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+        echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+
+    - name: 🧱 Build Kernel
+      run: |
+        # Determine available clang version
+        if command -v clang-18 &> /dev/null; then
+          CLANG_CMD="clang-18"
+          CLANGXX_CMD="clang++-18"
+          LLD_CMD="ld.lld-18"
+          LLVM_AR_CMD="llvm-ar-18"
+          LLVM_NM_CMD="llvm-nm-18"
+          LLVM_OBJCOPY_CMD="llvm-objcopy-18"
+          LLVM_OBJDUMP_CMD="llvm-objdump-18"
+          LLVM_READELF_CMD="llvm-readelf-18"
+          LLVM_SIZE_CMD="llvm-size-18"
+          LLVM_STRIP_CMD="llvm-strip-18"
+          LLVM_DIS_CMD="llvm-dis-18"
+        else
+          CLANG_CMD="clang"
+          CLANGXX_CMD="clang++"
+          LLD_CMD="ld.lld"
+          LLVM_AR_CMD="llvm-ar"
+          LLVM_NM_CMD="llvm-nm"
+          LLVM_OBJCOPY_CMD="llvm-objcopy"
+          LLVM_OBJDUMP_CMD="llvm-objdump"
+          LLVM_READELF_CMD="llvm-readelf"
+          LLVM_SIZE_CMD="llvm-size"
+          LLVM_STRIP_CMD="llvm-strip"
+          LLVM_DIS_CMD="llvm-dis"
+        fi
+
+        echo "Using Clang: $($CLANG_CMD --version | head -1)"
+
+        make O=out \
+          ARCH=$ARCH \
+          SUBARCH=$SUBARCH \
+          CLANG_TRIPLE=$CLANG_TRIPLE \
+          CROSS_COMPILE=$CROSS_COMPILE \
+          CROSS_COMPILE_COMPAT=$CROSS_COMPILE_COMPAT \
+          CC=$CLANG_CMD \
+          HOSTCC=$CLANG_CMD \
+          HOSTCXX=$CLANGXX_CMD \
+          LD=$LLD_CMD \
+          AR=$LLVM_AR_CMD \
+          NM=$LLVM_NM_CMD \
+          OBJCOPY=$LLVM_OBJCOPY_CMD \
+          OBJDUMP=$LLVM_OBJDUMP_CMD \
+          READELF=$LLVM_READELF_CMD \
+          OBJSIZE=$LLVM_SIZE_CMD \
+          STRIP=$LLVM_STRIP_CMD \
+          LLVM_AR=$LLVM_AR_CMD \
+          LLVM_DIS=$LLVM_DIS_CMD \
+          LLVM_NM=$LLVM_NM_CMD \
+          LLVM=1 \
+          -j$(nproc)
+
+    - name: 🏗️ Generate Image.gz-dtb if missing
+      run: |
+        if [ ! -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          if [ -f "out/arch/arm64/boot/Image.gz" ] && [ -f "out/arch/arm64/boot/dts/vendor/dre/holi.dtb" ]; then
+            cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/vendor/dre/holi.dtb > out/arch/arm64/boot/Image.gz-dtb
+            echo "✅ Created Image.gz-dtb by concatenating Image.gz and holi.dtb"
+          else
+            echo "❌ Required files Image.gz or holi.dtb not found."
+            ls -la out/arch/arm64/boot/
+            ls -la out/arch/arm64/boot/dts/vendor/dre/
+            exit 1
+          fi
+        else
+          echo "Image.gz-dtb already exists."
+        fi
+
+    - name: 📥 Download Original Boot Image (if provided)
+      if: github.event.inputs.boot_img_url != ''
+      run: |
+        echo "Downloading original boot.img from: ${{ github.event.inputs.boot_img_url }}"
+        wget -O original_boot.img "${{ github.event.inputs.boot_img_url }}"
+
+        if [ ! -f "original_boot.img" ]; then
+          echo "❌ Failed to download boot.img"
+          exit 1
+        fi
+
+        echo "✅ Original boot.img downloaded"
+        ls -lh original_boot.img
+
+    - name: 🔨 Create boot.img
+      run: |
+        # Check if kernel image was built successfully
+        if [ ! -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "❌ Kernel build failed - Image.gz-dtb not found"
+          ls -la out/arch/arm64/boot/
+          exit 1
+        fi
+
+        mkdir -p boot-output
+
+        if [ -f "original_boot.img" ]; then
+          echo "📦 Creating boot.img using original boot image as base..."
+
+          # Extract original boot.img
+          mkdir -p boot-extracted
+          cd boot-extracted
+
+          # Try magiskboot first
+          if command -v magiskboot &> /dev/null; then
+            echo "Using magiskboot to unpack..."
+            magiskboot unpack ../original_boot.img
+
+            # Replace kernel
+            cp ../out/arch/arm64/boot/Image.gz-dtb kernel
+
+            # Repack boot.img
+            magiskboot repack ../original_boot.img ../boot-output/boot.img
+
+          else
+            echo "Using mkbootimg tools to unpack..."
+            # Alternative method using unpackbootimg
+            if command -v unpackbootimg &> /dev/null; then
+              unpackbootimg -i ../original_boot.img
+
+              # Get boot image parameters
+              CMDLINE=$(cat *-cmdline)
+              BASE=$(cat *-base)
+              PAGESIZE=$(cat *-pagesize)
+              RAMDISK_OFFSET=$(cat *-ramdisk_offset)
+              TAGS_OFFSET=$(cat *-tags_offset)
+
+              # Create new boot.img
+              mkbootimg \
+                --kernel ../out/arch/arm64/boot/Image.gz-dtb \
+                --ramdisk *-ramdisk.gz \
+                --cmdline "$CMDLINE" \
+                --base "$BASE" \
+                --pagesize "$PAGESIZE" \
+                --ramdisk_offset "$RAMDISK_OFFSET" \
+                --tags_offset "$TAGS_OFFSET" \
+                --output ../boot-output/boot.img
+            else
+              echo "❌ No suitable boot image tools found"
+              exit 1
+            fi
+          fi
+
+          cd ..
+
+        else
+          echo "📦 Creating boot.img with default parameters..."
+          # Create boot.img with common parameters for OnePlus Nord N200
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image.gz-dtb \
+            --ramdisk /dev/null \
+            --cmdline "console=ttyMSM0,115200n8 androidboot.hardware=dre androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=4e00000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1" \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --kernel_offset 0x00008000 \
+            --ramdisk_offset 0x01000000 \
+            --second_offset 0x00000000 \
+            --tags_offset 0x00000100 \
+            --output boot-output/boot.img
+        fi
+
+        if [ -f "boot-output/boot.img" ]; then
+          echo "✅ boot.img created successfully"
+          ls -lh boot-output/boot.img
+        else
+          echo "❌ Failed to create boot.img"
+          exit 1
+        fi
+
+    - name: 📦 Prepare AnyKernel3 Package
+      run: |
+        # Clone AnyKernel3
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+
+        # Copy kernel image
+        cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+
+        # Create AnyKernel3 properties
+        cd anykernel
+        cat > anykernel.sh << 'EOF'
+        # AnyKernel3 Ramdisk Mod Script
+        # osm0sis @ xda-developers
+
+        ## AnyKernel setup
+        # begin properties
+        properties() { '
+        kernel.string=KernelSU NordN200 Kernel
+        do.devicecheck=1
+        do.modules=0
+        do.systemless=1
+        do.cleanup=1
+        do.cleanuponabort=0
+        device.name1=nord200
+        device.name2=nordn200
+        supported.versions=11-14
+        supported.patchlevels=
+        '; } # end properties
+
+        # shell variables
+        block=/dev/block/bootdevice/by-name/boot;
+        is_slot_device=0;
+        ramdisk_compression=auto;
+        patch_vbmeta_flag=auto;
+
+        ## AnyKernel methods (DO NOT CHANGE)
+        # import patching functions/variables - see for reference
+        . tools/ak3-core.sh;
+
+        ## AnyKernel file attributes
+        # set permissions/ownership for included ramdisk_files
+        set_perm_recursive 0 0 755 644 $ramdisk/*;
+        set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+
+        ## AnyKernel install
+        dump_boot;
+        write_boot;
+        ## end install
+        EOF
+
+        # Create flashable zip
+        zip -r9 ../KernelSU-NordN200-$(date +%Y%m%d-%H%M).zip * -x .git README.md
+
+    - name: 📊 Build Summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Kernel**: NordN200" >> $GITHUB_STEP_SUMMARY
+        echo "- **KernelSU Version**: ${{ github.event.inputs.kernelsu_version }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Date**: $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Clang Version**: $(clang-18 --version | head -1)" >> $GITHUB_STEP_SUMMARY
+
+        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "- **Kernel Size**: $(ls -lh out/arch/arm64/boot/Image.gz-dtb | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        if [ -f "boot-output/boot.img" ]; then
+          echo "- **Boot.img Size**: $(ls -lh boot-output/boot.img | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+          echo "✅ **Build Status**: SUCCESS (Kernel + boot.img)" >> $GITHUB_STEP_SUMMARY
+        elif [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "✅ **Build Status**: SUCCESS (Kernel only)" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Build Status**: FAILED" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: 📤 Upload Kernel Package and Boot Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: KernelSU-NordN200-$(date +%Y%m%d)
+        path: |
+          KernelSU-NordN200-*.zip
+          out/arch/arm64/boot/Image.gz-dtb
+          boot-output/boot.img
+        retention-days: 30
+
+    - name: 📤 Upload Build Logs (on failure)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs-$(date +%Y%m%d)
+        path: |
+          out/.config
+          out/compile.log
+          boot-extracted/*
+        retention-days: 7
