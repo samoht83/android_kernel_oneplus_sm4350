@@ -1,4 +1,4 @@
-name: Build boot Android Kernel with KernelSU v0.9.5 and Create boot.img
+name: Build Android Kernel with KernelSU v0.9.5 and Create boot.img
 
 on:
   workflow_dispatch:
@@ -15,10 +15,10 @@ on:
         description: 'KernelSU version'
         required: false
         default: 'v0.9.5'
-      boot_img_url: 
+      boot_img_url:
         description: 'Original boot.img URL (optional - for creating boot.img)'
         required: false
-        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/blob/lineage-22.2/arch/arm64/boot/boot.img'
+        default: ''
 
 jobs:
   build:
@@ -29,7 +29,7 @@ jobs:
       run: |
         echo "Cloning kernel source from: ${{ github.event.inputs.kernel_repo }}"
         BRANCH="${{ github.event.inputs.kernel_branch }}"
-
+        
         # Clone with fallback branches
         if ! git clone --depth=1 --branch=$BRANCH ${{ github.event.inputs.kernel_repo }} .; then
           echo "Failed to clone branch $BRANCH, trying alternatives..."
@@ -41,14 +41,14 @@ jobs:
             fi
           done
         fi
-
+        
         # Verify kernel source structure
         if [ ! -f "Makefile" ] || [ ! -d "arch/arm64" ]; then
           echo "❌ Invalid kernel source structure"
           ls -la
           exit 1
         fi
-
+        
         echo "✅ Kernel source ready"
 
     - name: 🔧 Setup Build Environment
@@ -57,7 +57,7 @@ jobs:
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
         sudo apt clean
         df -h
-
+        
         # Update package lists
         sudo apt update
 
@@ -68,7 +68,7 @@ jobs:
           libelf-dev libncurses-dev lzop python3 git wget unzip \
           device-tree-compiler cpio kmod zip \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-          python3-pip mkbootimg
+          python3-pip
 
     - name: 🧰 Setup LLVM/Clang Toolchain
       run: |
@@ -79,20 +79,20 @@ jobs:
           echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
         else
           echo "❌ Native packages failed, trying LLVM repository..."
-
+          
           # Method 2: Use correct Noble repository
           sudo rm -f /etc/apt/sources.list.d/archive_uri-http_apt_llvm_org_focal_-noble.list
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-18 main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt update
-
+          
           if sudo apt install -y clang-18 lld-18 llvm-18; then
             echo "✅ Using LLVM.org repository"
             echo "CLANG_PATH=/usr/lib/llvm-18" >> $GITHUB_ENV
             echo "/usr/lib/llvm-18/bin" >> $GITHUB_PATH
           else
             echo "❌ LLVM repository also failed, downloading prebuilt..."
-
+            
             # Method 3: Download prebuilt binaries as fallback
             mkdir -p toolchains && cd toolchains
             wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
@@ -104,7 +104,7 @@ jobs:
             echo "✅ Using prebuilt LLVM binaries"
           fi
         fi
-
+        
         # Verify installation
         clang-18 --version || clang --version
 
@@ -112,19 +112,25 @@ jobs:
       run: |
         # Install AIK (Android Image Kitchen) for boot.img manipulation
         mkdir -p boot-tools && cd boot-tools
-
-        # Download and setup mkbootimg tools
+        
+        # Download and setup osm0sis mkbootimg tools (more reliable)
         git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
         chmod +x mkbootimg/*
         echo "$(pwd)/mkbootimg" >> $GITHUB_PATH
-
-        # Install magiskboot as alternative
+        
+        # Install magiskboot as primary tool
         wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
         unzip -q Magisk-v27.0.apk lib/x86_64/libmagiskboot.so
         mv lib/x86_64/libmagiskboot.so magiskboot
         chmod +x magiskboot
         echo "$(pwd)" >> $GITHUB_PATH
-
+        
+        # Download AIK (Android Image Kitchen) as backup
+        wget -q https://github.com/osm0sis/AndroidImageKitchen/archive/refs/heads/master.zip
+        unzip -q master.zip
+        chmod +x AndroidImageKitchen-master/*.sh
+        echo "$(pwd)/AndroidImageKitchen-master" >> $GITHUB_PATH
+        
         cd ..
         echo "✅ Boot image tools ready"
 
@@ -165,9 +171,9 @@ jobs:
           find arch/arm64/configs -name "*defconfig" | head -10
           exit 1
         fi
-
+        
         make O=out dre_defconfig
-
+        
         # Enable KernelSU in config
         echo "CONFIG_KPROBES=y" >> out/.config
         echo "CONFIG_HAVE_KPROBES=y" >> out/.config
@@ -201,9 +207,9 @@ jobs:
           LLVM_STRIP_CMD="llvm-strip"
           LLVM_DIS_CMD="llvm-dis"
         fi
-
+        
         echo "Using Clang: $($CLANG_CMD --version | head -1)"
-
+        
         make O=out \
           ARCH=$ARCH \
           SUBARCH=$SUBARCH \
@@ -248,12 +254,12 @@ jobs:
       run: |
         echo "Downloading original boot.img from: ${{ github.event.inputs.boot_img_url }}"
         wget -O original_boot.img "${{ github.event.inputs.boot_img_url }}"
-
+        
         if [ ! -f "original_boot.img" ]; then
           echo "❌ Failed to download boot.img"
           exit 1
         fi
-
+        
         echo "✅ Original boot.img downloaded"
         ls -lh original_boot.img
 
@@ -265,74 +271,171 @@ jobs:
           ls -la out/arch/arm64/boot/
           exit 1
         fi
-
+        
         mkdir -p boot-output
-
-        if [ -f "boot.img" ]; then
+        
+        if [ -f "original_boot.img" ]; then
           echo "📦 Creating boot.img using original boot image as base..."
-
+          
           # Extract original boot.img
           mkdir -p boot-extracted
           cd boot-extracted
-
+          
           # Try magiskboot first
           if command -v magiskboot &> /dev/null; then
             echo "Using magiskboot to unpack..."
             magiskboot unpack ../original_boot.img
-
+            
             # Replace kernel
             cp ../out/arch/arm64/boot/Image.gz-dtb kernel
-
+            
             # Repack boot.img
             magiskboot repack ../original_boot.img ../boot-output/boot.img
-
+            
           else
-            echo "Using mkbootimg tools to unpack..."
-            # Alternative method using unpackbootimg
-            if command -v unpackbootimg &> /dev/null; then
-              unpackbootimg -i ../original_boot.img
-
-              # Get boot image parameters
-              CMDLINE=$(cat *-cmdline)
-              BASE=$(cat *-base)
-              PAGESIZE=$(cat *-pagesize)
-              RAMDISK_OFFSET=$(cat *-ramdisk_offset)
-              TAGS_OFFSET=$(cat *-tags_offset)
-
-              # Create new boot.img
-              mkbootimg \
-                --kernel ../out/arch/arm64/boot/Image.gz-dtb \
-                --ramdisk *-ramdisk.gz \
-                --cmdline "$CMDLINE" \
-                --base "$BASE" \
-                --pagesize "$PAGESIZE" \
-                --ramdisk_offset "$RAMDISK_OFFSET" \
-                --tags_offset "$TAGS_OFFSET" \
-                --output ../boot-output/boot.img
+            echo "Using Android Image Kitchen..."
+            # Try AIK method
+            if command -v unpackimg.sh &> /dev/null; then
+              cp ../original_boot.img .
+              ./unpackimg.sh original_boot.img
+              
+              # Replace kernel
+              cp ../out/arch/arm64/boot/Image.gz-dtb split_img/original_boot.img-kernel
+              
+              # Repack
+              ./repackimg.sh
+              cp image-new.img ../boot-output/boot.img
             else
               echo "❌ No suitable boot image tools found"
               exit 1
             fi
           fi
-
+          
           cd ..
-
+          
         else
           echo "📦 Creating boot.img with default parameters..."
-          # Create boot.img with common parameters for OnePlus Nord N200
-          mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz-dtb \
-            --ramdisk /dev/null \
-            --cmdline "console=ttyMSM0,115200n8 androidboot.hardware=dre androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=4e00000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1" \
-            --base 0x00000000 \
-            --pagesize 4096 \
-            --kernel_offset 0x00008000 \
-            --ramdisk_offset 0x01000000 \
-            --second_offset 0x00000000 \
-            --tags_offset 0x00000100 \
-            --output boot-output/boot.img
-        fi
+          
+          # Create a simple ramdisk
+          mkdir -p ramdisk-tmp
+          echo '#!/system/bin/sh' > ramdisk-tmp/init
+          chmod 755 ramdisk-tmp/init
+          
+          cd ramdisk-tmp
+          find . | cpio -o -H newc | gzip > ../ramdisk.cpio.gz
+          cd ..
+          
+          # Use osm0sis mkbootimg if available
+          if command -v boot-tools/mkbootimg/mkbootimg &> /dev/null; then
+            boot-tools/mkbootimg/mkbootimg \
+              --kernel out/arch/arm64/boot/Image.gz-dtb \
+              --ramdisk ramdisk.cpio.gz \
+              --cmdline "console=ttyMSM0,115200n8 androidboot.hardware=dre androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=4e00000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1" \
+              --base 0x00000000 \
+              --pagesize 4096 \
+              --kernel_offset 0x00008000 \
+              --ramdisk_offset 0x01000000 \
+              --second_offset 0x00000000 \
+              --tags_offset 0x00000100 \
+              --output boot-output/boot.img
+          else
+            # Try magiskboot to create boot.img
+            if command -v magiskboot &> /dev/null; then
+              # Create a basic header
+              cat > boot_header << 'EOF'
+ANDROID!
+0000000000000000000000000000000000000000000000000000000000000000
+0000000000008000
+0000000001000000
+0000000000000000
+0000000000000100
+0000000000001000
+0000000000000000
+board
+console=ttyMSM0,115200n8 androidboot.hardware=dre androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=4e00000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1
+EOF
+              
+              # Use magiskboot to create boot image
+              magiskboot hexpatch boot_header "ANDROID!" "ANDROID!"
+              
+              # Manual creation using dd (fallback)
+              echo "Creating boot.img manually..."
+              
+              # Calculate sizes
+              KERNEL_SIZE=$(stat -c%s out/arch/arm64/boot/Image.gz-dtb)
+              RAMDISK_SIZE=$(stat -c%s ramdisk.cpio.gz)
+              PAGE_SIZE=4096
+              
+              # Create boot.img with proper structure
+              python3 << EOF
+import struct
+import os
 
+# Boot image header structure
+def create_boot_header():
+    magic = b'ANDROID!'
+    kernel_size = os.path.getsize('out/arch/arm64/boot/Image.gz-dtb')
+    kernel_addr = 0x00008000
+    ramdisk_size = os.path.getsize('ramdisk.cpio.gz')
+    ramdisk_addr = 0x01000000
+    second_size = 0
+    second_addr = 0x00000000
+    tags_addr = 0x00000100
+    page_size = 4096
+    unused = 0
+    os_version = 0
+    name = b'dre' + b'\x00' * 13  # 16 bytes
+    cmdline = b'console=ttyMSM0,115200n8 androidboot.hardware=dre androidboot.console=ttyMSM0 androidboot.memcg=1 lpm_levels.sleep_disabled=1 video=vfb:640x400,bpp=32,memsize=3072000 msm_rtb.filter=0x237 service_locator.enable=1 androidboot.usbcontroller=4e00000.dwc3 swiotlb=0 loop.max_part=7 cgroup.memory=nokmem,nosocket iptable_raw.raw_before_defrag=1 ip6table_raw.raw_before_defrag=1'
+    cmdline = cmdline[:512]  # Max 512 bytes
+    cmdline += b'\x00' * (512 - len(cmdline))
+    
+    id_hash = b'\x00' * 32  # SHA1 hash, we'll use zeros
+    
+    header = struct.pack('<8s10I16s512s32s',
+        magic, kernel_size, kernel_addr, ramdisk_size, ramdisk_addr,
+        second_size, second_addr, tags_addr, page_size, unused, os_version,
+        name, cmdline, id_hash)
+    
+    return header
+
+# Create boot.img
+with open('boot-output/boot.img', 'wb') as boot_img:
+    # Write header
+    header = create_boot_header()
+    boot_img.write(header)
+    
+    # Pad to page boundary
+    padding = 4096 - len(header)
+    boot_img.write(b'\x00' * padding)
+    
+    # Write kernel
+    with open('out/arch/arm64/boot/Image.gz-dtb', 'rb') as f:
+        kernel_data = f.read()
+        boot_img.write(kernel_data)
+    
+    # Pad kernel to page boundary
+    kernel_padding = (4096 - (len(kernel_data) % 4096)) % 4096
+    boot_img.write(b'\x00' * kernel_padding)
+    
+    # Write ramdisk
+    with open('ramdisk.cpio.gz', 'rb') as f:
+        ramdisk_data = f.read()
+        boot_img.write(ramdisk_data)
+    
+    # Pad ramdisk to page boundary
+    ramdisk_padding = (4096 - (len(ramdisk_data) % 4096)) % 4096
+    boot_img.write(b'\x00' * ramdisk_padding)
+
+print("Boot image created successfully")
+EOF
+              
+            else
+              echo "❌ No suitable tools found to create boot.img"
+              exit 1
+            fi
+          fi
+        fi
+        
         if [ -f "boot-output/boot.img" ]; then
           echo "✅ boot.img created successfully"
           ls -lh boot-output/boot.img
@@ -345,16 +448,16 @@ jobs:
       run: |
         # Clone AnyKernel3
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-
+        
         # Copy kernel image
         cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-
+        
         # Create AnyKernel3 properties
         cd anykernel
         cat > anykernel.sh << 'EOF'
         # AnyKernel3 Ramdisk Mod Script
         # osm0sis @ xda-developers
-
+        
         ## AnyKernel setup
         # begin properties
         properties() { '
@@ -369,28 +472,28 @@ jobs:
         supported.versions=11-14
         supported.patchlevels=
         '; } # end properties
-
+        
         # shell variables
         block=/dev/block/bootdevice/by-name/boot;
         is_slot_device=0;
         ramdisk_compression=auto;
         patch_vbmeta_flag=auto;
-
+        
         ## AnyKernel methods (DO NOT CHANGE)
         # import patching functions/variables - see for reference
         . tools/ak3-core.sh;
-
+        
         ## AnyKernel file attributes
         # set permissions/ownership for included ramdisk_files
         set_perm_recursive 0 0 755 644 $ramdisk/*;
         set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-
+        
         ## AnyKernel install
         dump_boot;
         write_boot;
         ## end install
         EOF
-
+        
         # Create flashable zip
         zip -r9 ../KernelSU-NordN200-$(date +%Y%m%d-%H%M).zip * -x .git README.md
 
@@ -401,11 +504,11 @@ jobs:
         echo "- **KernelSU Version**: ${{ github.event.inputs.kernelsu_version }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Date**: $(date)" >> $GITHUB_STEP_SUMMARY
         echo "- **Clang Version**: $(clang-18 --version | head -1)" >> $GITHUB_STEP_SUMMARY
-
+        
         if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
           echo "- **Kernel Size**: $(ls -lh out/arch/arm64/boot/Image.gz-dtb | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
         fi
-
+        
         if [ -f "boot-output/boot.img" ]; then
           echo "- **Boot.img Size**: $(ls -lh boot-output/boot.img | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
           echo "✅ **Build Status**: SUCCESS (Kernel + boot.img)" >> $GITHUB_STEP_SUMMARY
