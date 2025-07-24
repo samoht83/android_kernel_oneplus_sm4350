@@ -91,6 +91,9 @@ modules.order
 !.gitattributes
 !.gitignore
 !.mailmap
+!.github
+!.github/
+!.github/workflows
 
 #
 # Generated include files

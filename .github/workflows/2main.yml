@@ -202,6 +202,22 @@ jobs:
           LLVM=1 \
           -j$(nproc)
 
+    - name: 🏗️ Generate Image.gz-dtb if missing
+      run: |
+        if [ ! -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          if [ -f "out/arch/arm64/boot/Image.gz" ] && [ -f "out/arch/arm64/boot/dts/vendor/dre/holi.dtb" ]; then
+            cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/vendor/dre/holi.dtb > out/arch/arm64/boot/Image.gz-dtb
+            echo "✅ Created Image.gz-dtb by concatenating Image.gz and holi.dtb"
+          else
+            echo "❌ Required files Image.gz or holi.dtb not found."
+            ls -la out/arch/arm64/boot/
+            ls -la out/arch/arm64/boot/dts/vendor/dre/
+            exit 1
+          fi
+        else
+          echo "Image.gz-dtb already exists."
+        fi
+
     - name: 📦 Prepare AnyKernel3 Package
       run: |
         # Clone AnyKernel3
