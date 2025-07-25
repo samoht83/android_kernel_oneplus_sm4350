@@ -3,14 +3,17 @@ name: Build Boot Image
 on:
   workflow_dispatch:
     inputs:
-      kernel_repo: 'https://github.com/samoht83/android_kernel_oneplus_sm4350.git'
-        description: 'https://github.com/samoht83/android_kernel_oneplus_sm4350.git'
+      kernel_repo:
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350.git'
+        description: 'Kernel repository URL'
         required: true
-      kernel_branch: 'lineage-22.2'
-        description: 'lineage-22.2'
+      kernel_branch:
+        default: 'lineage-22.2'
+        description: 'Kernel branch'
         required: true
-      defconfig: 'dre_defconfig'
-        description: 'n200_defconfig'
+      defconfig:
+        default: 'dre_defconfig'
+        description: 'Kernel defconfig (e.g., dre_defconfig, n200_defconfig)'
         required: true
       dtbo:
         description: 'Build DTBO image? (true/false)'
@@ -36,7 +39,10 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git kmod libssl-dev libz-dev lz4 python3 python3-pip rsync unzip wget zip
+          sudo apt-get install -y \
+            bc bison build-essential ccache cpio curl flex git kmod \
+            libssl-dev libelf-dev libncurses5-dev lz4 python3 python3-pip \
+            rsync unzip wget zip gcc-aarch64-linux-gnu device-tree-compiler
 
       - name: 🌐 Setup LLVM/Clang Toolchain
         shell: bash
@@ -44,14 +50,31 @@ jobs:
           sudo mkdir -p /opt/clang
           wget -qO- https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz | sudo tar -xJ -C /opt/clang --strip-components=1
           echo "CLANG_PATH=/opt/clang/bin" >> $GITHUB_ENV
+          echo "/opt/clang/bin" >> $GITHUB_PATH
 
       - name: 📥 Clone Kernel Source
         shell: bash
         run: |
           BRANCH="${{ github.event.inputs.kernel_branch }}"
+          echo "Cloning kernel from ${{ github.event.inputs.kernel_repo }} (branch: $BRANCH)"
+          
           if ! git clone --depth=1 --branch="$BRANCH" "${{ github.event.inputs.kernel_repo }}" kernel; then
-            echo "::error::Failed to clone kernel source"
-            exit 1
+            echo "::error::Failed to clone kernel source from branch $BRANCH"
+            
+            # Try fallback branches
+            echo "Trying fallback branches..."
+            for alt_branch in master main android-11 android-12 lineage-18.1; do
+              echo "Trying branch: $alt_branch"
+              if git clone --depth=1 --branch="$alt_branch" "${{ github.event.inputs.kernel_repo }}" kernel; then
+                echo "::notice::Successfully cloned using fallback branch: $alt_branch"
+                break
+              fi
+            done
+            
+            if [ ! -d "kernel" ]; then
+              echo "::error::All clone attempts failed"
+              exit 1
+            fi
           fi
 
       - name: ⚙️ Prepare Kernel Source
@@ -59,8 +82,30 @@ jobs:
         run: |
           cd kernel
           if [ ! -f "Makefile" ] || [ ! -d "arch/arm64" ]; then
-            echo "::error::Kernel source appears invalid."
+            echo "::error::Kernel source appears invalid - missing Makefile or arch/arm64"
+            ls -la
             exit 1
+          fi
+          
+          # Check if defconfig exists
+          DEFCONFIG="${{ github.event.inputs.defconfig }}"
+          if [ ! -f "arch/arm64/configs/$DEFCONFIG" ]; then
+            echo "::warning::Defconfig $DEFCONFIG not found. Available configs:"
+            find arch/arm64/configs -name "*defconfig" | head -10
+            
+            # Try to find a suitable defconfig
+            if [ -f "arch/arm64/configs/dre_defconfig" ]; then
+              echo "::notice::Using dre_defconfig as fallback"
+              echo "DEFCONFIG=dre_defconfig" >> $GITHUB_ENV
+            elif [ -f "arch/arm64/configs/n200_defconfig" ]; then
+              echo "::notice::Using n200_defconfig as fallback"
+              echo "DEFCONFIG=n200_defconfig" >> $GITHUB_ENV
+            else
+              echo "::error::No suitable defconfig found"
+              exit 1
+            fi
+          else
+            echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
           fi
 
       - name: 🏗️ Build Kernel
@@ -68,49 +113,239 @@ jobs:
         run: |
           set -euo pipefail
           cd kernel
-          export PATH="$CLANG_PATH:$PATH"
-          make O=out ARCH=arm64 "${{ github.event.inputs.defconfig }}"
-          make -j$(nproc) O=out ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld
+          
+          export PATH="/opt/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export STRIP=llvm-strip
+          export KBUILD_BUILD_USER=GitHub-Actions
+          export KBUILD_BUILD_HOST=GitHub
+          
+          # Use environment variable or input parameter
+          DEFCONFIG="${DEFCONFIG:-${{ github.event.inputs.defconfig }}}"
+          
+          echo "Building kernel with defconfig: $DEFCONFIG"
+          
+          # Generate config
+          make O=out ARCH=arm64 "$DEFCONFIG"
+          
+          # Build kernel
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            CC=clang \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            STRIP=llvm-strip \
+            LLVM=1
+
+      - name: 🏗️ Generate Image.gz-dtb if needed
+        shell: bash
+        run: |
+          cd kernel/out
+          
+          if [ ! -f "arch/arm64/boot/Image.gz-dtb" ]; then
+            echo "Image.gz-dtb not found, attempting to create it..."
+            
+            if [ -f "arch/arm64/boot/Image.gz" ] && [ -f "arch/arm64/boot/dts/vendor/dre/holi.dtb" ]; then
+              cat arch/arm64/boot/Image.gz arch/arm64/boot/dts/vendor/dre/holi.dtb > arch/arm64/boot/Image.gz-dtb
+              echo "✅ Created Image.gz-dtb by concatenating Image.gz and holi.dtb"
+            elif [ -f "arch/arm64/boot/Image.gz" ]; then
+              # If no specific DTB found, look for any DTB files
+              DTB_FILE=$(find arch/arm64/boot/dts -name "*.dtb" | head -1)
+              if [ -n "$DTB_FILE" ]; then
+                cat arch/arm64/boot/Image.gz "$DTB_FILE" > arch/arm64/boot/Image.gz-dtb
+                echo "✅ Created Image.gz-dtb using DTB: $DTB_FILE"
+              else
+                # Just copy Image.gz as Image.gz-dtb if no DTB found
+                cp arch/arm64/boot/Image.gz arch/arm64/boot/Image.gz-dtb
+                echo "⚠️ No DTB found, using Image.gz as Image.gz-dtb"
+              fi
+            else
+              echo "::error::No kernel image found to build Image.gz-dtb"
+              exit 1
+            fi
+          else
+            echo "✅ Image.gz-dtb already exists"
+          fi
 
       - name: 📦 Build DTBO (Optional)
-        if: inputs.dtbo == 'true'
+        if: github.event.inputs.dtbo == 'true'
         shell: bash
         run: |
           set -euo pipefail
           cd kernel
-          export PATH="$CLANG_PATH:$PATH"
-          make O=out ARCH=arm64 dtbo.img
+          export PATH="/opt/clang/bin:$PATH"
+          
+          echo "Building DTBO image..."
+          if make O=out ARCH=arm64 dtbo.img; then
+            echo "✅ DTBO image built successfully"
+          else
+            echo "::warning::DTBO build failed, continuing without it"
+          fi
+
+      - name: 🛠️ Setup AnyKernel3
+        shell: bash
+        run: |
+          # Clone AnyKernel3 template
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+          
+          # Create custom AnyKernel3 script
+          cd AnyKernel3
+          cat > anykernel.sh << 'EOF'
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
+
+## AnyKernel setup
+# begin properties
+properties() { '
+kernel.string=Custom Kernel by GitHub Actions
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=nord200
+device.name2=nordn200
+device.name3=dre
+supported.versions=11-14
+supported.patchlevels=
+'; } # end properties
+
+# shell variables
+block=/dev/block/bootdevice/by-name/boot;
+is_slot_device=0;
+ramdisk_compression=auto;
+patch_vbmeta_flag=auto;
+
+## AnyKernel methods (DO NOT CHANGE)
+# import patching functions/variables - see for reference
+. tools/ak3-core.sh;
+
+## AnyKernel file attributes
+# set permissions/ownership for included ramdisk files
+set_perm_recursive 0 0 755 644 $ramdisk/*;
+set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+
+## AnyKernel install
+dump_boot;
+write_boot;
+## end install
+EOF
 
       - name: 📦 Package Boot Image
         shell: bash
         run: |
           set -euo pipefail
           cd kernel/out
-          if [ ! -f "arch/arm64/boot/Image.gz" ]; then
-            echo "::error::Kernel image not found!"
+          
+          # Check for kernel images
+          KERNEL_IMAGE=""
+          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
+            KERNEL_IMAGE="arch/arm64/boot/Image.gz-dtb"
+            echo "✅ Using Image.gz-dtb"
+          elif [ -f "arch/arm64/boot/Image.gz" ]; then
+            KERNEL_IMAGE="arch/arm64/boot/Image.gz"
+            echo "✅ Using Image.gz"
+          elif [ -f "arch/arm64/boot/Image" ]; then
+            KERNEL_IMAGE="arch/arm64/boot/Image"
+            echo "✅ Using Image"
+          else
+            echo "::error::No kernel image found!"
+            ls -la arch/arm64/boot/
             exit 1
           fi
-          mkdir -p ../../AnyKernel3
-          cp arch/arm64/boot/Image* ../../AnyKernel3/
-          if [ -f arch/arm64/boot/dtbo.img ]; then
+          
+          # Copy kernel image to AnyKernel3
+          cp "$KERNEL_IMAGE" "../../AnyKernel3/"
+          echo "Copied $KERNEL_IMAGE to AnyKernel3/"
+          
+          # Copy DTBO if it exists
+          if [ -f "arch/arm64/boot/dtbo.img" ]; then
             cp arch/arm64/boot/dtbo.img ../../AnyKernel3/
+            echo "✅ Copied dtbo.img to AnyKernel3/"
+          else
+            echo "ℹ️ No dtbo.img found, skipping"
+          fi
+          
+          # Copy any DTB files
+          if find arch/arm64/boot -name "*.dtb" | head -1 > /dev/null; then
+            find arch/arm64/boot -name "*.dtb" -exec cp {} ../../AnyKernel3/ \;
+            echo "✅ Copied DTB files to AnyKernel3/"
           fi
 
-      - name: 📦 Zip AnyKernel3
+      - name: 📦 Create Flashable Zip
         shell: bash
         run: |
           cd AnyKernel3
-          zip -r9 ../flashable_kernel.zip ./*
+          
+          # List contents for verification
+          echo "AnyKernel3 contents:"
+          ls -la
+          
+          # Create timestamp for unique naming
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          ZIP_NAME="kernel-${{ github.event.inputs.defconfig }}-${TIMESTAMP}.zip"
+          
+          # Create flashable zip
+          zip -r9 "../${ZIP_NAME}" ./* -x .git README.md
+          
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "✅ Created flashable zip: ${ZIP_NAME}"
+
+      - name: 📊 Build Summary
+        shell: bash
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository**: ${{ github.event.inputs.kernel_repo }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch**: ${{ github.event.inputs.kernel_branch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Defconfig**: ${{ github.event.inputs.defconfig }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **DTBO**: ${{ github.event.inputs.dtbo }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Date**: $(date)" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "$ZIP_NAME" ]; then
+            echo "- **Flashable Zip**: ${ZIP_NAME}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Zip Size**: $(ls -lh $ZIP_NAME | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Build Status**: SUCCESS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Build Status**: FAILED" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: 📤 Upload Flashable Zip
         uses: actions/upload-artifact@v4
         with:
-          name: flashable_kernel
-          path: flashable_kernel.zip
+          name: flashable_kernel-${{ github.run_number }}
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 30
 
-      - name: 📤 Upload Kernel Build Log on Failure
+      - name: 📤 Upload Individual Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel_files-${{ github.run_number }}
+          path: |
+            kernel/out/arch/arm64/boot/Image*
+            kernel/out/arch/arm64/boot/dtbo.img
+            kernel/out/arch/arm64/boot/dts/**/*.dtb
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: 📤 Upload Build Logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kernel_build_log
-          path: kernel/out/build.log
+          name: build_logs-${{ github.run_number }}
+          path: |
+            kernel/out/.config
+            kernel/out/build.log
+          if-no-files-found: ignore
+          retention-days: 7
