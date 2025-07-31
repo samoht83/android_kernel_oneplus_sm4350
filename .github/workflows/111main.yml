@@ -21,12 +21,12 @@ jobs:
         key: clang-17.0.6
 
     - name: Download and Extract Clang 17.0.6
-      if: steps.cache-clang.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p clang && cd clang
-        wget --location https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
-        tar -xf clang-llvm-17.0.6.tar.xz
-        rm clang-llvm-17.0.6.tar.xz
+  if: steps.cache-clang.outputs.cache-hit != 'true'
+  run: |
+    mkdir -p clang && cd clang
+    wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
+    tar -xf clang-llvm-17.0.6.tar.xz
+    rm clang-llvm-17.0.6.tar.xz
 
     - name: Set CLANG_PATH environment variable
       run: echo "CLANG_PATH=$(pwd)/clang/clang-llvm-17.0.6" >> $GITHUB_ENV
