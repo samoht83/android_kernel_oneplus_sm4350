@@ -1,2 +1,3 @@
 *.c   diff=cpp
 *.h   diff=cpp
+/data/data/com.termux/files/home/kernel/stock/original_boot.img filter=lfs diff=lfs merge=lfs -text
