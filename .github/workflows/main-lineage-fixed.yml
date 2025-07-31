@@ -12,7 +12,7 @@ on:
         required: true
         default: 'v0.9.5'
       DEFCONFIG:
-        description: 'Defconfig name (e.g., holi_defconfig, sm4350_defconfig)'
+        description: 'Defconfig name (e.g., holi_defconfig)'
         required: true
         default: 'holi-qgki_defconfig'
       ANYKERNEL3_BRANCH:
@@ -27,7 +27,7 @@ jobs:
       contents: write
 
     steps:
-    - name: Checkout Lineage Kernel Source
+    - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
         repository: samoht83/android_kernel_oneplus_sm4350
@@ -41,45 +41,44 @@ jobs:
         ref: ${{ github.event.inputs.ANYKERNEL3_BRANCH }}
         path: AnyKernel3
 
-    - name: Install Build Dependencies
+    - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip lld llvm clang # Ensure clang and llvm are installed
+        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip lld llvm clang
 
-    - name: Verify LLVM Tools
+    - name: Create Toolchain Version File
       run: |
-        which llvm-nm || echo "llvm-nm missing"
-        which llvm-ar || echo "llvm-ar missing"
-        which llvm-objdump || echo "llvm-objdump missing"
-        which clang || echo "clang missing"
+        mkdir -p build_scripts
+        echo "clang-android-17.0.6-binutils-4.9" > build_scripts/toolchain_version.txt
 
-    - name: Cache AOSP Clang Toolchain and Binutils
+    - name: Cache Toolchains
       id: cache-toolchain
       uses: actions/cache@v4
       with:
         path: |
-          clang
-          binutils
-        key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }} 
+          toolchains/clang
+          toolchains/binutils
+        key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
 
-    - name: Clone AOSP Clang Toolchain and Binutils
+    - name: Download Toolchains
       if: steps.cache-toolchain.outputs.cache-hit != 'true'
       run: |
+        mkdir -p toolchains
+        cd toolchains
         git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 --depth=1
-        mv aarch64-linux-android-4.9 binutils
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 binutils --depth=1
 
-    - name: Set up Build Environment
+    - name: Set Up Build Environment
       run: |
         echo "ARCH=arm64" >> $GITHUB_ENV
         echo "SUBARCH=arm64" >> $GITHUB_ENV
-        echo "$(pwd)/clang/bin" >> $GITHUB_PATH
-        echo "$(pwd)/binutils/bin" >> $GITHUB_PATH
+        echo "${{ github.workspace }}/toolchains/clang/clang-r*/bin" >> $GITHUB_PATH
+        echo "${{ github.workspace }}/toolchains/binutils/bin" >> $GITHUB_PATH
         echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
         echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
         echo "LLVM=1" >> $GITHUB_ENV
         echo "LLVM_IAS=1" >> $GITHUB_ENV
-        echo "CCACHE_DIR=$(pwd)/.ccache" >> $GITHUB_ENV
+        echo "CCACHE_DIR=${{ github.workspace }}/.ccache" >> $GITHUB_ENV
         echo "USE_CCACHE=1" >> $GITHUB_ENV
         echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
         ccache -M 20G
@@ -98,7 +97,7 @@ jobs:
       run: |
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ github.event.inputs.KERNELSU_VERSION }}
 
-    - name: Clean Kernel Source
+    - name: Clean Kernel
       working-directory: kernel
       run: |
         make O=out clean
@@ -114,13 +113,13 @@ jobs:
       run: |
         make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error
 
-    - name: Prepare AnyKernel3 Package
+    - name: Prepare AnyKernel3 Zip
       working-directory: AnyKernel3
       run: |
         cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
         zip -r9 "AnyKernel3-NordN200-KernelSU-${{ github.run_id }}.zip" * -x .git README.md *placeholder
 
-    - name: Upload AnyKernel3 Package
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: NordN200-KernelSU-Kernel
