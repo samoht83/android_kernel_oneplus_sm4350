@@ -15,18 +15,18 @@ jobs:
 
     - name: Cache Clang Toolchain
       id: cache-clang
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: clang
         key: clang-17.0.6
 
     - name: Download and Extract Clang 17.0.6
-      if:  steps.cache-clang.outputs.cache-hit != 'true'
+      if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
-      mkdir -p clang && cd clang
-      wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
-    tar -xf clang-llvm-17.0.6.tar.xz
-    rm clang-llvm-17.0.6.tar.xz
+        mkdir -p clang && cd clang
+        wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
+        tar -xf clang-llvm-17.0.6.tar.xz
+        rm clang-llvm-17.0.6.tar.xz
 
     - name: Set CLANG_PATH environment variable
       run: echo "CLANG_PATH=$(pwd)/clang/clang-llvm-17.0.6" >> $GITHUB_ENV
@@ -52,7 +52,8 @@ jobs:
 
     - name: Install Python Tools for Repacking
       run: |
-        sudo apt install -y python3-pip python3-dev
+        sudo apt-get update
+        sudo apt-get install -y python3-pip python3-dev
         pip install -U protobuf
         git clone https://github.com/PainKiller3/unpack_bootimg.git tools/unpack_bootimg
         git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools/mkbootimg
@@ -76,21 +77,39 @@ jobs:
 
     - name: Repack Patched boot.img
       run: |
-        python3 tools/mkbootimg/mkbootimg.py \
-          --kernel extracted_boot/kernel \
-          --ramdisk extracted_boot/ramdisk \
-          --cmdline "$(cat extracted_boot/cmdline)" \
-          --base $(cat extracted_boot/base) \
-          --pagesize $(cat extracted_boot/pagesize) \
-          --os_version $(cat extracted_boot/os_version) \
-          --os_patch_level $(cat extracted_boot/os_patch_level) \
-          --header_version $(cat extracted_boot/header_version) \
-          --tags_offset $(cat extracted_boot/tags_offset) \
-          --dtb_offset $(cat extracted_boot/dtb_offset) \
-          --ramdisk_offset $(cat extracted_boot/ramdisk_offset) \
-          --kernel_offset $(cat extracted_boot/kernel_offset) \
-          --board $(cat extracted_boot/board) \
-          -o boot_patched.img
+        # Read boot image parameters
+        CMDLINE=$(cat extracted_boot/cmdline 2>/dev/null || echo "")
+        BASE=$(cat extracted_boot/base 2>/dev/null || echo "0x00000000")
+        PAGESIZE=$(cat extracted_boot/pagesize 2>/dev/null || echo "4096")
+        OS_VERSION=$(cat extracted_boot/os_version 2>/dev/null || echo "")
+        OS_PATCH_LEVEL=$(cat extracted_boot/os_patch_level 2>/dev/null || echo "")
+        HEADER_VERSION=$(cat extracted_boot/header_version 2>/dev/null || echo "2")
+        TAGS_OFFSET=$(cat extracted_boot/tags_offset 2>/dev/null || echo "0x00000100")
+        DTB_OFFSET=$(cat extracted_boot/dtb_offset 2>/dev/null || echo "0x01f00000")
+        RAMDISK_OFFSET=$(cat extracted_boot/ramdisk_offset 2>/dev/null || echo "0x01000000")
+        KERNEL_OFFSET=$(cat extracted_boot/kernel_offset 2>/dev/null || echo "0x00008000")
+        BOARD=$(cat extracted_boot/board 2>/dev/null || echo "")
+        
+        # Build mkbootimg command
+        MKBOOTIMG_CMD="python3 tools/mkbootimg/mkbootimg.py --kernel extracted_boot/kernel --ramdisk extracted_boot/ramdisk"
+        
+        # Add optional parameters if they exist
+        [ -n "$CMDLINE" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --cmdline \"$CMDLINE\""
+        [ -n "$BASE" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --base $BASE"
+        [ -n "$PAGESIZE" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --pagesize $PAGESIZE"
+        [ -n "$OS_VERSION" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --os_version $OS_VERSION"
+        [ -n "$OS_PATCH_LEVEL" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --os_patch_level $OS_PATCH_LEVEL"
+        [ -n "$HEADER_VERSION" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --header_version $HEADER_VERSION"
+        [ -n "$TAGS_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --tags_offset $TAGS_OFFSET"
+        [ -n "$DTB_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --dtb_offset $DTB_OFFSET"
+        [ -n "$RAMDISK_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --ramdisk_offset $RAMDISK_OFFSET"
+        [ -n "$KERNEL_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --kernel_offset $KERNEL_OFFSET"
+        [ -n "$BOARD" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --board $BOARD"
+        
+        MKBOOTIMG_CMD="$MKBOOTIMG_CMD -o boot_patched.img"
+        
+        echo "Running: $MKBOOTIMG_CMD"
+        eval $MKBOOTIMG_CMD
 
     - name: Upload Patched Boot Image
       uses: actions/upload-artifact@v4
