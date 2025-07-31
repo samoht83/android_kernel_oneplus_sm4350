@@ -13,12 +13,23 @@ jobs:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
 
-    - name: Set up Clang 17
+    - name: Cache Clang Toolchain
+      id: cache-clang
+      uses: actions/cache@v3
+      with:
+        path: clang
+        key: clang-17.0.6
+
+    - name: Download and Extract Clang 17.0.6
+      if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p clang && cd clang
-        wget https://github.com/ClangBuiltLinux/tc-build/releases/download/2023.12.01/clang+llvm-17.0.6-x86_64.tar.xz
-        tar -xf clang+llvm-17.0.6-x86_64.tar.xz
-        echo "CLANG_PATH=$PWD/clang+llvm-17.0.6-x86_64" >> $GITHUB_ENV
+        wget --location https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
+        tar -xf clang-llvm-17.0.6.tar.xz
+        rm clang-llvm-17.0.6.tar.xz
+
+    - name: Set CLANG_PATH environment variable
+      run: echo "CLANG_PATH=$(pwd)/clang/clang-llvm-17.0.6" >> $GITHUB_ENV
 
     - name: Apply KernelSU v0.9.5
       run: |
@@ -49,13 +60,13 @@ jobs:
     - name: Download Stock Boot.img
       run: |
         mkdir stock && cd stock
-        wget https://github.com/samoht83/android_kernel_oneplus_sm4350/blob/lineage-22.2/arch/arm64/boot/original_boot.img
+        wget https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img
 
     - name: Extract boot.img
       run: |
         mkdir extracted_boot
         python3 tools/unpack_bootimg/unpack_bootimg.py \
-          --boot_img arch/arm64/boot/original_boot.img \
+          --boot_img stock/original_boot.img \
           --out extracted_boot \
           --format mkbootimg
 
@@ -86,5 +97,3 @@ jobs:
       with:
         name: boot_patched.img
         path: boot_patched.img
-
-
