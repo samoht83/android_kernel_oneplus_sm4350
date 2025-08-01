@@ -18,15 +18,33 @@ jobs:
       uses: actions/cache@v4
       with:
         path: clang
-        key: clang-17.0.6
+        key: clang-17.0.6-v2
 
     - name: Download and Extract Clang 17.0.6
       if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p clang && cd clang
-                wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
-        tar -xf clang-llvm-17.0.6.tar.xz
-        rm clang-llvm-17.0.6.tar.xz
+        # Try multiple sources for Clang 17.0.6
+        if ! wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz; then
+          echo "Primary source failed, trying alternative..."
+          if ! wget -L https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz; then
+            echo "Official LLVM source failed, trying latest available from its-pointless..."
+            # Get the latest available version
+            wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.3/clang-llvm-17.0.3.tar.xz
+            tar -xf clang-llvm-17.0.3.tar.xz
+            rm clang-llvm-17.0.3.tar.xz
+            # Create symlink for consistency
+            ln -sf clang-llvm-17.0.3 clang-llvm-17.0.6
+          else
+            tar -xf clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+            rm clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+            # Rename to expected directory structure
+            mv clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04 clang-llvm-17.0.6
+          fi
+        else
+          tar -xf clang-llvm-17.0.6.tar.xz
+          rm clang-llvm-17.0.6.tar.xz
+        fi
 
     - name: Set CLANG_PATH environment variable
       run: echo "CLANG_PATH=$(pwd)/clang/clang-llvm-17.0.6" >> $GITHUB_ENV
@@ -42,6 +60,10 @@ jobs:
         export PATH=$CLANG_PATH/bin:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
+        # Verify clang is available
+        which clang || (echo "Clang not found in PATH" && exit 1)
+        clang --version
+        
         make O=out vendor/holi-qgki_defconfig
         make -j$(nproc) O=out \
           CC=clang \
@@ -55,64 +77,103 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y python3-pip python3-dev
         pip install -U protobuf
+        
+        # Clone tools to specific directories
+        mkdir -p tools
         git clone https://github.com/PainKiller3/unpack_bootimg.git tools/unpack_bootimg
         git clone https://android.googlesource.com/platform/system/tools/mkbootimg tools/mkbootimg
 
     - name: Download Stock Boot.img
       run: |
-        mkdir stock && cd stock
-        wget https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img
+        mkdir -p stock && cd stock
+        if ! wget https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img; then
+          echo "Failed to download boot.img from primary source"
+          exit 1
+        fi
 
     - name: Extract boot.img
       run: |
-        mkdir extracted_boot
+        mkdir -p extracted_boot
         python3 tools/unpack_bootimg/unpack_bootimg.py \
           --boot_img stock/original_boot.img \
           --out extracted_boot \
           --format mkbootimg
 
+    - name: Verify Kernel Build Output
+      run: |
+        if [ ! -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "Kernel build failed - Image.gz-dtb not found"
+          ls -la out/arch/arm64/boot/ || echo "Boot directory doesn't exist"
+          exit 1
+        fi
+        echo "Kernel size: $(stat -c%s out/arch/arm64/boot/Image.gz-dtb) bytes"
+
     - name: Replace Kernel in Extracted Boot
       run: |
         cp out/arch/arm64/boot/Image.gz-dtb extracted_boot/kernel
+        echo "Original kernel size: $(stat -c%s extracted_boot/kernel) bytes"
 
     - name: Repack Patched boot.img
       run: |
-        # Read boot image parameters
-        CMDLINE=$(cat extracted_boot/cmdline 2>/dev/null || echo "")
-        BASE=$(cat extracted_boot/base 2>/dev/null || echo "0x00000000")
-        PAGESIZE=$(cat extracted_boot/pagesize 2>/dev/null || echo "4096")
-        OS_VERSION=$(cat extracted_boot/os_version 2>/dev/null || echo "")
-        OS_PATCH_LEVEL=$(cat extracted_boot/os_patch_level 2>/dev/null || echo "")
-        HEADER_VERSION=$(cat extracted_boot/header_version 2>/dev/null || echo "2")
-        TAGS_OFFSET=$(cat extracted_boot/tags_offset 2>/dev/null || echo "0x00000100")
-        DTB_OFFSET=$(cat extracted_boot/dtb_offset 2>/dev/null || echo "0x01f00000")
-        RAMDISK_OFFSET=$(cat extracted_boot/ramdisk_offset 2>/dev/null || echo "0x01000000")
-        KERNEL_OFFSET=$(cat extracted_boot/kernel_offset 2>/dev/null || echo "0x00008000")
-        BOARD=$(cat extracted_boot/board 2>/dev/null || echo "")
+        cd extracted_boot
+        
+        # Read boot image parameters with better error handling
+        CMDLINE=""
+        BASE="0x00000000"
+        PAGESIZE="4096"
+        OS_VERSION=""
+        OS_PATCH_LEVEL=""
+        HEADER_VERSION="2"
+        TAGS_OFFSET="0x00000100"
+        DTB_OFFSET="0x01f00000"
+        RAMDISK_OFFSET="0x01000000"
+        KERNEL_OFFSET="0x00008000"
+        BOARD=""
+        
+        # Try to read parameters from files
+        [ -f cmdline ] && CMDLINE=$(cat cmdline)
+        [ -f base ] && BASE=$(cat base)
+        [ -f pagesize ] && PAGESIZE=$(cat pagesize)
+        [ -f os_version ] && OS_VERSION=$(cat os_version)
+        [ -f os_patch_level ] && OS_PATCH_LEVEL=$(cat os_patch_level)
+        [ -f header_version ] && HEADER_VERSION=$(cat header_version)
+        [ -f tags_offset ] && TAGS_OFFSET=$(cat tags_offset)
+        [ -f dtb_offset ] && DTB_OFFSET=$(cat dtb_offset)
+        [ -f ramdisk_offset ] && RAMDISK_OFFSET=$(cat ramdisk_offset)
+        [ -f kernel_offset ] && KERNEL_OFFSET=$(cat kernel_offset)
+        [ -f board ] && BOARD=$(cat board)
+        
+        cd ..
         
         # Build mkbootimg command
-        MKBOOTIMG_CMD="python3 tools/mkbootimg/mkbootimg.py --kernel extracted_boot/kernel --ramdisk extracted_boot/ramdisk"
+        python3 tools/mkbootimg/mkbootimg.py \
+          --kernel extracted_boot/kernel \
+          --ramdisk extracted_boot/ramdisk \
+          --cmdline "$CMDLINE" \
+          --base $BASE \
+          --pagesize $PAGESIZE \
+          --header_version $HEADER_VERSION \
+          --tags_offset $TAGS_OFFSET \
+          --dtb_offset $DTB_OFFSET \
+          --ramdisk_offset $RAMDISK_OFFSET \
+          --kernel_offset $KERNEL_OFFSET \
+          --board "$BOARD" \
+          -o boot_patched.img
         
-        # Add optional parameters if they exist
-        [ -n "$CMDLINE" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --cmdline \"$CMDLINE\""
-        [ -n "$BASE" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --base $BASE"
-        [ -n "$PAGESIZE" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --pagesize $PAGESIZE"
-        [ -n "$OS_VERSION" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --os_version $OS_VERSION"
-        [ -n "$OS_PATCH_LEVEL" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --os_patch_level $OS_PATCH_LEVEL"
-        [ -n "$HEADER_VERSION" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --header_version $HEADER_VERSION"
-        [ -n "$TAGS_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --tags_offset $TAGS_OFFSET"
-        [ -n "$DTB_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --dtb_offset $DTB_OFFSET"
-        [ -n "$RAMDISK_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --ramdisk_offset $RAMDISK_OFFSET"
-        [ -n "$KERNEL_OFFSET" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --kernel_offset $KERNEL_OFFSET"
-        [ -n "$BOARD" ] && MKBOOTIMG_CMD="$MKBOOTIMG_CMD --board $BOARD"
-        
-        MKBOOTIMG_CMD="$MKBOOTIMG_CMD -o boot_patched.img"
-        
-        echo "Running: $MKBOOTIMG_CMD"
-        eval $MKBOOTIMG_CMD
+        echo "Patched boot.img size: $(stat -c%s boot_patched.img) bytes"
 
     - name: Upload Patched Boot Image
       uses: actions/upload-artifact@v4
       with:
-        name: boot_patched.img
+        name: boot_patched_kernelsu
         path: boot_patched.img
+
+    - name: Upload Build Logs (on failure)
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_logs
+        path: |
+          out/.config
+          out/build.log
+        retention-days: 7
