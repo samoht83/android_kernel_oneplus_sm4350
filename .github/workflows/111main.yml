@@ -38,7 +38,7 @@ jobs:
         sudo apt-get install -y -qq \
           build-essential bc bison flex libssl-dev libelf-dev \
           python3-pip python3-dev git wget curl zip unzip \
-          libc6-dev-i386  x11proto-core-dev \
+          libc6-dev-i386 x11proto-core-dev \
           libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
           xsltproc unzip fontconfig
 
@@ -97,23 +97,112 @@ jobs:
         echo "Setting up boot image tools..."
         cd tools
         
-        # Download mkbootimg
-        if ! git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/osm0sis/mkbootimg.git; then
-          echo "Git clone failed for mkbootimg, using wget..."
-          wget -O mkbootimg.zip https://github.com/osm0sis/mkbootimg/archive/refs/heads/master.zip
-          unzip -q mkbootimg.zip
-          mv mkbootimg-master mkbootimg
-          rm mkbootimg.zip
+        # Download Android's official mkbootimg tools
+        echo "Downloading official Android boot tools..."
+        if ! git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/android/platform_system_tools_mkbootimg.git mkbootimg; then
+          echo "Official Android tools failed, trying osm0sis version..."
+          if ! git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/osm0sis/mkbootimg.git; then
+            echo "Git clone failed, downloading as zip..."
+            wget -O mkbootimg.zip https://github.com/osm0sis/mkbootimg/archive/refs/heads/master.zip
+            unzip -q mkbootimg.zip
+            mv mkbootimg-master mkbootimg
+            rm mkbootimg.zip
+          fi
         fi
         
-        # Download unpack_bootimg
-        if ! git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/PainKiller3/unpack_bootimg.git; then
-          echo "Git clone failed for unpack_bootimg, using wget..."
-          wget -O unpack_bootimg.zip https://github.com/PainKiller3/unpack_bootimg/archive/refs/heads/master.zip
-          unzip -q unpack_bootimg.zip
-          mv unpack_bootimg-master unpack_bootimg
-          rm unpack_bootimg.zip
-        fi
+        # Create our own unpack_bootimg.py script
+        echo "Creating unpack_bootimg.py script..."
+        mkdir -p unpack_bootimg
+        cat > unpack_bootimg/unpack_bootimg.py << 'EOF'
+#!/usr/bin/env python3
+import struct
+import os
+import sys
+import argparse
+
+def unpack_boot_img(boot_img_path, out_dir):
+    """Simple boot.img unpacker"""
+    os.makedirs(out_dir, exist_ok=True)
+    
+    with open(boot_img_path, 'rb') as f:
+        # Read Android boot header
+        header = f.read(2048)  # Standard Android boot header size
+        
+        if header[:8] != b'ANDROID!':
+            print("Not a valid Android boot image")
+            return False
+        
+        # Parse header (simplified)
+        kernel_size = struct.unpack('<I', header[8:12])[0]
+        kernel_addr = struct.unpack('<I', header[12:16])[0]
+        ramdisk_size = struct.unpack('<I', header[16:20])[0]
+        ramdisk_addr = struct.unpack('<I', header[20:24])[0]
+        second_size = struct.unpack('<I', header[24:28])[0]
+        second_addr = struct.unpack('<I', header[28:32])[0]
+        tags_addr = struct.unpack('<I', header[32:36])[0]
+        page_size = struct.unpack('<I', header[36:40])[0]
+        
+        # Extract cmdline
+        cmdline = header[64:64+512].rstrip(b'\x00').decode('utf-8', errors='ignore')
+        
+        print(f"Kernel size: {kernel_size}")
+        print(f"Ramdisk size: {ramdisk_size}")
+        print(f"Page size: {page_size}")
+        
+        # Calculate offsets
+        kernel_offset = page_size
+        ramdisk_offset = kernel_offset + ((kernel_size + page_size - 1) // page_size) * page_size
+        second_offset = ramdisk_offset + ((ramdisk_size + page_size - 1) // page_size) * page_size
+        
+        # Extract kernel
+        f.seek(kernel_offset)
+        kernel_data = f.read(kernel_size)
+        with open(os.path.join(out_dir, 'kernel'), 'wb') as kf:
+            kf.write(kernel_data)
+        
+        # Extract ramdisk
+        if ramdisk_size > 0:
+            f.seek(ramdisk_offset)
+            ramdisk_data = f.read(ramdisk_size)
+            with open(os.path.join(out_dir, 'ramdisk'), 'wb') as rf:
+                rf.write(ramdisk_data)
+        else:
+            # Create empty ramdisk
+            with open(os.path.join(out_dir, 'ramdisk'), 'wb') as rf:
+                rf.write(b'')
+        
+        # Save parameters
+        with open(os.path.join(out_dir, 'cmdline'), 'w') as f:
+            f.write(cmdline)
+        with open(os.path.join(out_dir, 'base'), 'w') as f:
+            f.write(f"0x{kernel_addr - 0x00008000:08x}")
+        with open(os.path.join(out_dir, 'pagesize'), 'w') as f:
+            f.write(str(page_size))
+        with open(os.path.join(out_dir, 'kernel_offset'), 'w') as f:
+            f.write(f"0x{0x00008000:08x}")
+        with open(os.path.join(out_dir, 'ramdisk_offset'), 'w') as f:
+            f.write(f"0x{ramdisk_addr - (kernel_addr - 0x00008000):08x}")
+        with open(os.path.join(out_dir, 'tags_offset'), 'w') as f:
+            f.write(f"0x{tags_addr - (kernel_addr - 0x00008000):08x}")
+        with open(os.path.join(out_dir, 'header_version'), 'w') as f:
+            f.write("2")
+        
+        return True
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Unpack Android boot.img')
+    parser.add_argument('--boot_img', required=True, help='Path to boot.img')
+    parser.add_argument('--out', required=True, help='Output directory')
+    parser.add_argument('--format', default='mkbootimg', help='Output format')
+    
+    args = parser.parse_args()
+    
+    if unpack_boot_img(args.boot_img, args.out):
+        print("Boot image unpacked successfully")
+    else:
+        print("Failed to unpack boot image")
+        sys.exit(1)
+EOF
         
         # Make scripts executable
         find . -name "*.py" -exec chmod +x {} \;
