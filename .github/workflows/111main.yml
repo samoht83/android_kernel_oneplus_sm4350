@@ -38,7 +38,7 @@ jobs:
         sudo apt-get install -y -qq \
           build-essential bc bison flex libssl-dev libelf-dev \
           python3-pip python3-dev git wget curl zip unzip \
-          libc6-dev-i386 x11proto-core-dev \
+          libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev \
           libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
           xsltproc unzip fontconfig
 
@@ -53,6 +53,8 @@ jobs:
 
     - name: Setup toolchain
       if: steps.cache-toolchain.outputs.cache-hit != 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         mkdir -p toolchain tools
         
@@ -94,11 +96,27 @@ jobs:
         # Setup boot image tools
         echo "Setting up boot image tools..."
         cd tools
-        git clone --depth=1 https://github.com/osm0sis/mkbootimg.git
-        git clone --depth=1 https://github.com/PainKiller3/unpack_bootimg.git
+        
+        # Download mkbootimg
+        if ! git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/osm0sis/mkbootimg.git; then
+          echo "Git clone failed for mkbootimg, using wget..."
+          wget -O mkbootimg.zip https://github.com/osm0sis/mkbootimg/archive/refs/heads/master.zip
+          unzip -q mkbootimg.zip
+          mv mkbootimg-master mkbootimg
+          rm mkbootimg.zip
+        fi
+        
+        # Download unpack_bootimg
+        if ! git clone --depth=1 https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/PainKiller3/unpack_bootimg.git; then
+          echo "Git clone failed for unpack_bootimg, using wget..."
+          wget -O unpack_bootimg.zip https://github.com/PainKiller3/unpack_bootimg/archive/refs/heads/master.zip
+          unzip -q unpack_bootimg.zip
+          mv unpack_bootimg-master unpack_bootimg
+          rm unpack_bootimg.zip
+        fi
         
         # Make scripts executable
-        chmod +x mkbootimg/*.py unpack_bootimg/*.py
+        find . -name "*.py" -exec chmod +x {} \;
         cd ..
 
     - name: Setup KernelSU
