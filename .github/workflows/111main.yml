@@ -1,9 +1,6 @@
-
 name: Build KernelSU Kernel and Repack Boot Image
 
-# Controls when the workflow will run
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
       kernelsu_version:
@@ -16,14 +13,13 @@ on:
         required: true
         default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img'
         type: string
- 
 
-# A map of environment variables that are available to all jobs and steps
 env:
   KERNEL_DEFCONFIG: vendor/holi-qgki_defconfig
   ARCH: arm64
-  # The stock boot URL will default to the one from the push event, or the one specified in workflow_dispatch
   STOCK_BOOT_URL: ${{ github.event.inputs.stock_boot_url || 'https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img' }}
+  OS_VERSION: "12.0.0"
+  OS_PATCH_LEVEL: "2025-08"
 
 jobs:
   build:
@@ -33,20 +29,16 @@ jobs:
     steps:
     - name: Maximize build space
       run: |
-        # Free up disk space by removing large, pre-installed tools
-        # Add '|| true' to prevent errors if directories do not exist
         sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
         sudo apt-get clean
 
     - name: Checkout kernel source
       uses: actions/checkout@v4
       with:
-        # Fetch only the last commit to speed up checkout
         fetch-depth: 1
 
     - name: Install build dependencies
       run: |
-        # Update package lists and install all necessary build tools in one step
         sudo apt-get update -qq
         sudo apt-get install -y -qq --no-install-recommends \
           build-essential bc bison flex libssl-dev libelf-dev \
@@ -61,27 +53,20 @@ jobs:
         path: |
           toolchain
           tools
-        # Key is based on runner OS to prevent cache conflicts
         key: ${{ runner.os }}-android-toolchain-v4
 
     - name: Setup Clang and Build Tools
       if: steps.cache-tools.outputs.cache-hit != 'true'
       run: |
-        set -e # Exit immediately if a command exits with a non-zero status.
+        set -e
         mkdir -p toolchain tools
         
-        # Download and extract Clang toolchain
-        echo "Downloading Clang toolchain..."
         wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r487747.tar.gz"
         tar -xzf clang.tar.gz -C toolchain/
         rm clang.tar.gz
         
-        # Download mkbootimg (boot image packing tool)
-        echo "Downloading mkbootimg..."
         git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
 
-        # Create a more robust unpack_bootimg.py script
-        echo "Creating unpack_bootimg.py..."
         mkdir -p tools/unpack_bootimg
         cat > tools/unpack_bootimg/unpack_bootimg.py << 'EOF'
 #!/usr/bin/env python3
@@ -90,14 +75,14 @@ import struct, os, sys, argparse
 def unpack_boot_img(boot_img_path, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     with open(boot_img_path, 'rb') as f:
-        header_data = f.read(2048) # Read a common header size
+        header_data = f.read(2048)
         if len(header_data) < 64 or header_data[:8] != b'ANDROID!':
             print("Error: Not a valid Android boot image.", file=sys.stderr)
             return False
 
         header_version = struct.unpack('<I', header_data[40:44])[0]
         if header_version > 2:
-            print(f"Warning: Boot image header version is {header_version}. This script may not be fully compatible.", file=sys.stderr)
+            print(f"Warning: Boot image header version is {header_version}.", file=sys.stderr)
 
         kernel_size, kernel_addr = struct.unpack('<2I', header_data[8:16])
         ramdisk_size, ramdisk_addr = struct.unpack('<2I', header_data[16:24])
@@ -105,21 +90,18 @@ def unpack_boot_img(boot_img_path, out_dir):
         page_size = struct.unpack('<I', header_data[36:40])[0]
         cmdline = header_data[64:576].rstrip(b'\0').decode('utf-8', 'ignore')
 
-        print(f"  Kernel size: {kernel_size} | Ramdisk size: {ramdisk_size} | Page size: {page_size}")
-
         kernel_offset = page_size
         ramdisk_offset = kernel_offset + ((kernel_size + page_size - 1) // page_size) * page_size
-        
+
         f.seek(kernel_offset)
         with open(os.path.join(out_dir, 'kernel'), 'wb') as kf:
             kf.write(f.read(kernel_size))
-        
+
         if ramdisk_size > 0:
             f.seek(ramdisk_offset)
             with open(os.path.join(out_dir, 'ramdisk.gz'), 'wb') as rf:
                 rf.write(f.read(ramdisk_size))
-        
-        # Save board parameters for repacking
+
         with open(os.path.join(out_dir, 'board_vars.env'), 'w') as bf:
             bf.write(f'CMDLINE="{cmdline}"\n')
             bf.write(f'BASE=0x{kernel_addr - 0x00008000:08x}\n')
@@ -127,7 +109,7 @@ def unpack_boot_img(boot_img_path, out_dir):
             bf.write(f'HEADER_VERSION={header_version}\n')
             bf.write(f'RAMDISK_OFFSET=0x{ramdisk_addr - (kernel_addr - 0x00008000):08x}\n')
             bf.write(f'TAGS_OFFSET=0x{tags_addr - (kernel_addr - 0x00008000):08x}\n')
-        
+
         return True
 
 if __name__ == '__main__':
@@ -135,7 +117,7 @@ if __name__ == '__main__':
     parser.add_argument('--boot_img', required=True, help='Path to boot.img')
     parser.add_argument('--out', required=True, help='Output directory')
     args = parser.parse_args()
-    
+
     if not unpack_boot_img(args.boot_img, args.out):
         sys.exit(1)
 EOF
@@ -144,12 +126,11 @@ EOF
     - name: Setup KernelSU
       run: |
         set -e
-        # Use the version from the manual trigger, or the default from the top-level env
         KSU_VERSION="${{ github.event.inputs.kernelsu_version || env.KSU_VERSION }}"
         echo "Setting up KernelSU version: ${KSU_VERSION}"
 
         git clone --depth=1 --branch ${KSU_VERSION} https://github.com/tiann/KernelSU.git KernelSU
-        
+
         CONFIG_FILE="arch/${ARCH}/configs/${KERNEL_DEFCONFIG}"
         if [ -f "$CONFIG_FILE" ]; then
           echo "Patching defconfig: $CONFIG_FILE"
@@ -161,28 +142,32 @@ EOF
           echo "Error: Defconfig not found at $CONFIG_FILE" >&2
           exit 1
         fi
-        
-        # Set KSU_PATCH_PATH for the build step
+
         echo "KSU_PATCH_PATH=$(realpath KernelSU)" >> $GITHUB_ENV
+
+    - name: Apply KernelSU Patch (Optional)
+      run: |
+        if [ -f KernelSU/scripts/ksu.sh ]; then
+          echo "Applying KernelSU patch..."
+          bash KernelSU/scripts/ksu.sh --source_root=$(pwd) --defconfig=arch/${ARCH}/configs/${KERNEL_DEFCONFIG}
+        else
+          echo "ksu.sh script not found — skipping patch."
+        fi
 
     - name: Build kernel
       run: |
-        # Fail the script if any command fails, including those in a pipeline
         set -eo pipefail
-
         export PATH="$(pwd)/toolchain/bin:$PATH"
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CLANG_TRIPLE=aarch64-linux-gnu-
-        
-        echo "Toolchain verification:"
+
         clang --version
 
         make mrproper
         make O=out ARCH=${ARCH} ${KERNEL_DEFCONFIG}
-        
+
         grep -q "CONFIG_KERNELSU=y" out/.config && echo "✓ KernelSU is enabled." || (echo "✗ KernelSU config not found. Aborting."; exit 1)
-        
-        echo "Starting kernel build..."
+
         make -j$(nproc) O=out \
           ARCH=${ARCH} \
           CC=clang \
@@ -190,24 +175,24 @@ EOF
           KERNELSU=1 \
           2>&1 | tee build.log
 
-        # Verify and prepare final kernel image
+        mkdir -p kernel_out
         if [ -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
-          mv out/arch/${ARCH}/boot/Image.gz-dtb kernel_out
+          mv out/arch/${ARCH}/boot/Image.gz-dtb kernel_out/Image.gz-dtb
         elif [ -f "out/arch/${ARCH}/boot/Image-dtb" ]; then
-          gzip -c out/arch/${ARCH}/boot/Image-dtb > kernel_out
+          gzip -c out/arch/${ARCH}/boot/Image-dtb > kernel_out/Image.gz-dtb
         elif [ -f "out/arch/${ARCH}/boot/Image.gz" ] && [ -f "out/arch/${ARCH}/boot/dtb" ]; then
-          cat out/arch/${ARCH}/boot/Image.gz out/arch/${ARCH}/boot/dtb > kernel_out
+          cat out/arch/${ARCH}/boot/Image.gz out/arch/${ARCH}/boot/dtb > kernel_out/Image.gz-dtb
         else
           echo "✗ Kernel build failed. No kernel image found." >&2
           exit 1
         fi
-        echo "✓ Kernel built successfully: $(ls -lh kernel_out)"
+        echo "✓ Kernel built successfully: $(ls -lh kernel_out/Image.gz-dtb)"
 
     - name: Download and Repack Boot Image
       run: |
         set -e
         mkdir -p stock_boot boot_work
-        
+
         echo "Downloading stock boot image from: ${{ env.STOCK_BOOT_URL }}"
         wget -O stock_boot/boot.img "${{ env.STOCK_BOOT_URL }}"
         if [ ! -s stock_boot/boot.img ]; then
@@ -215,26 +200,18 @@ EOF
             exit 1
         fi
 
-        echo "Unpacking stock boot image..."
         python3 tools/unpack_bootimg/unpack_bootimg.py --boot_img stock_boot/boot.img --out boot_work
-        source boot_work/board_vars.env # Load variables like CMDLINE, BASE, etc.
+        source boot_work/board_vars.env
 
-        # If ramdisk wasn't extracted, create a minimal placeholder to prevent errors
         if [ ! -f "boot_work/ramdisk.gz" ]; then
-            echo "Warning: No ramdisk found in boot.img. Creating empty ramdisk."
             mkdir empty_ramdisk && cd empty_ramdisk
             echo "#!/system/bin/sh" > init
             find . | cpio -o -H newc | gzip > ../boot_work/ramdisk.gz
             cd ..
         fi
 
-        echo "Repacking boot image with new kernel..."
-        # These are common fallback values, but ideally they come from board_vars.env
-        OS_VERSION=${OS_VERSION:-"12.0.0"}
-        OS_PATCH_LEVEL=${OS_PATCH_LEVEL:-"2025-08"}
-
         python3 tools/mkbootimg/mkbootimg.py \
-          --kernel ../kernel_out \
+          --kernel kernel_out/Image.gz-dtb \
           --ramdisk boot_work/ramdisk.gz \
           --cmdline "$CMDLINE" \
           --base "$BASE" \
@@ -248,21 +225,22 @@ EOF
 
         if [ -f boot_kernelsu.img ]; then
           echo "✓ Boot image repacked successfully: boot_kernelsu.img"
-          echo "Final image size: $(stat -c%s boot_kernelsu.img) bytes"
         else
           echo "✗ Boot image repack failed." >&2
           exit 1
         fi
 
+    - name: Upload Kernel Config
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-config-${{ github.run_number }}
+        path: out/.config
+
     - name: Prepare Release Artifacts
       run: |
         KSU_VERSION="${{ github.event.inputs.kernelsu_version || 'v0.9.5' }}"
         COMMIT_SHA=$(git rev-parse --short HEAD)
-        
-        # Rename the kernel artifact for clarity
-        mv kernel_out Image.gz-dtb
-        
-        # Create a release notes file
         cat > release_info.md << EOF
         # KernelSU Build: ${KSU_VERSION}
         - **Build Date:** $(date -u)
@@ -276,13 +254,13 @@ EOF
         - \`build.log\`: The full compilation log.
 
         ### Flashing Instructions
-        1.  Ensure you have an unlocked bootloader.
-        2.  Reboot your device to fastboot/bootloader mode.
-        3.  Flash the image: \`fastboot flash boot boot_kernelsu.img\`
-        4.  Reboot: \`fastboot reboot\`
-        5.  Install the KernelSU Manager APK.
-        
-        **Disclaimer:** Flash at your own risk. Incorrectly flashing boot images can brick your device.
+        1. Ensure you have an unlocked bootloader.
+        2. Reboot to bootloader mode.
+        3. Run: \`fastboot flash boot boot_kernelsu.img\`
+        4. Reboot: \`fastboot reboot\`
+        5. Install the KernelSU Manager APK.
+
+        **Disclaimer:** Flash at your own risk. Boot image flashing can brick your device.
         EOF
 
     - name: Upload Build Artifacts
@@ -291,7 +269,7 @@ EOF
         name: kernelsu-build-${{ github.run_number }}
         path: |
           boot_kernelsu.img
-          Image.gz-dtb
+          kernel_out/Image.gz-dtb
           build.log
           release_info.md
         retention-days: 30
