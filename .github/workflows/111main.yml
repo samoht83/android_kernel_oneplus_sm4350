@@ -69,7 +69,7 @@ jobs:
 
         mkdir -p tools/unpack_bootimg
         cat > tools/unpack_bootimg/unpack_bootimg.py << 'EOF'
-#!/usr/bin/env python3
+
 import struct, os, sys, argparse
 
 def unpack_boot_img(boot_img_path, out_dir):
