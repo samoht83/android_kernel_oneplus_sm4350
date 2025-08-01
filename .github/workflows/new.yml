@@ -193,26 +193,26 @@ EOF
         mv kernel_out/Image.gz-dtb .
         sha256sum boot_kernelsu.img Image.gz-dtb > SHA256SUMS.txt
         cat > release_info.md << EOF
-        # KernelSU Build: ${KSU_VERSION}
-        - **Build Date:** $(date -u)
-        - **KernelSU Version:** ${KSU_VERSION}
-        - **Source Commit:** \`${COMMIT_SHA}\`
-        - **Device:** OnePlus Nord N200 (holi)
-        - **Kernel Config:** \`${{ env.KERNEL_DEFCONFIG }}\`
+# KernelSU Build: ${KSU_VERSION}
+- **Build Date:** $(date -u)
+- **KernelSU Version:** ${KSU_VERSION}
+- **Source Commit:** `${COMMIT_SHA}`
+- **Device:** OnePlus Nord N200 (holi)
+- **Kernel Config:** `${{ env.KERNEL_DEFCONFIG }}`
 
-        ### Files
-        - \`boot_kernelsu.img\`: Flash via fastboot.
-        - \`KernelSU-flashable.zip\`: Flashable in recovery.
-        - \`Image.gz-dtb\`: Raw kernel image.
-        - \`build.log\`, \`SHA256SUMS.txt\`
+### Files
+- `boot_kernelsu.img`: Flash via fastboot.
+- `KernelSU-flashable.zip`: Flashable in recovery.
+- `Image.gz-dtb`: Raw kernel image.
+- `build.log`, `SHA256SUMS.txt`
 
-        ### Flashing Instructions
-        - Fastboot: \`fastboot flash boot boot_kernelsu.img\`
-        - Recovery: Flash \`KernelSU-flashable.zip\`
-        - Then install KernelSU Manager APK.
+### Flashing Instructions
+- Fastboot: `fastboot flash boot boot_kernelsu.img`
+- Recovery: Flash `KernelSU-flashable.zip`
+- Then install KernelSU Manager APK.
 
-        **Disclaimer:** Flash at your own risk.
-        EOF
+**Disclaimer:** Flash at your own risk.
+EOF
 
     - name: Package with AnyKernel3
       run: |
@@ -268,3 +268,4 @@ EOS
           out/.config
           boot_work/
         retention-days: 5
+
