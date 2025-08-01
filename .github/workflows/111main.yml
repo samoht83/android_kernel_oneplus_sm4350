@@ -1,4 +1,4 @@
-# Name of the workflow
+
 name: Build KernelSU Kernel and Repack Boot Image
 
 # Controls when the workflow will run
