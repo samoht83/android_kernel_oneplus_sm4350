@@ -202,7 +202,7 @@ if __name__ == '__main__':
     else:
         print("Failed to unpack boot image")
         sys.exit(1)
-EOF
+        EOF
         
         # Make scripts executable
         find . -name "*.py" -exec chmod +x {} \;
