@@ -1,0 +1,270 @@
+name: Build KernelSU Kernel and Repack Boot Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernelsu_version:
+        description: 'KernelSU version tag (e.g., v0.9.5)'
+        required: true
+        default: 'v0.9.5'
+        type: string
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img'
+        type: string
+
+env:
+  KERNEL_DEFCONFIG: vendor/holi-qgki_defconfig
+  ARCH: arm64
+  STOCK_BOOT_URL: ${{ github.event.inputs.stock_boot_url || 'https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/lineage-22.2/arch/arm64/boot/original_boot.img' }}
+
+jobs:
+  build:
+    name: Build KernelSU Kernel
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Maximize build space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+        sudo apt-get clean
+
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          build-essential bc bison flex libssl-dev libelf-dev \
+          python3-pip python3-dev git wget curl zip unzip \
+          libc6-dev-i386 lib32z1-dev libgl1-mesa-dev \
+          libxml2-utils xsltproc fontconfig cpio
+
+    - name: Cache toolchains and tools
+      id: cache-tools
+      uses: actions/cache@v4
+      with:
+        path: |
+          toolchain
+          tools
+        key: ${{ runner.os }}-android-toolchain-v4
+
+    - name: Setup Clang and Build Tools
+      if: steps.cache-tools.outputs.cache-hit != 'true'
+      run: |
+        set -e
+        mkdir -p toolchain tools
+        wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r487747.tar.gz"
+        tar -xzf clang.tar.gz -C toolchain/
+        rm clang.tar.gz
+        git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
+
+        mkdir -p tools/unpack_bootimg
+        cat > tools/unpack_bootimg/unpack_bootimg.py << 'EOF'
+#!/usr/bin/env python3
+import struct, os, sys, argparse
+
+def unpack_boot_img(boot_img_path, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    with open(boot_img_path, 'rb') as f:
+        header_data = f.read(2048)
+        if len(header_data) < 64 or header_data[:8] != b'ANDROID!':
+            print("Error: Not a valid Android boot image.", file=sys.stderr)
+            return False
+
+        header_version = struct.unpack('<I', header_data[40:44])[0]
+        kernel_size, kernel_addr = struct.unpack('<2I', header_data[8:16])
+        ramdisk_size, ramdisk_addr = struct.unpack('<2I', header_data[16:24])
+        tags_addr = struct.unpack('<I', header_data[32:36])[0]
+        page_size = struct.unpack('<I', header_data[36:40])[0]
+        cmdline = header_data[64:576].rstrip(b'\0').decode('utf-8', 'ignore')
+
+        kernel_offset = page_size
+        ramdisk_offset = kernel_offset + ((kernel_size + page_size - 1) // page_size) * page_size
+
+        f.seek(kernel_offset)
+        with open(os.path.join(out_dir, 'kernel'), 'wb') as kf:
+            kf.write(f.read(kernel_size))
+
+        if ramdisk_size > 0:
+            f.seek(ramdisk_offset)
+            with open(os.path.join(out_dir, 'ramdisk.gz'), 'wb') as rf:
+                rf.write(f.read(ramdisk_size))
+
+        with open(os.path.join(out_dir, 'board_vars.env'), 'w') as bf:
+            bf.write(f'CMDLINE="{cmdline}"\n')
+            bf.write(f'BASE=0x{kernel_addr - 0x00008000:08x}\n')
+            bf.write(f'PAGESIZE={page_size}\n')
+            bf.write(f'HEADER_VERSION={header_version}\n')
+            bf.write(f'RAMDISK_OFFSET=0x{ramdisk_addr - (kernel_addr - 0x00008000):08x}\n')
+            bf.write(f'TAGS_OFFSET=0x{tags_addr - (kernel_addr - 0x00008000):08x}\n')
+
+        return True
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Unpack Android boot.img')
+    parser.add_argument('--boot_img', required=True, help='Path to boot.img')
+    parser.add_argument('--out', required=True, help='Output directory')
+    args = parser.parse_args()
+    if not unpack_boot_img(args.boot_img, args.out):
+        sys.exit(1)
+EOF
+        chmod +x tools/unpack_bootimg/unpack_bootimg.py
+
+    - name: Setup KernelSU
+      run: |
+        set -e
+        KSU_VERSION="${{ github.event.inputs.kernelsu_version || 'v0.9.5' }}"
+        git clone --depth=1 --branch ${KSU_VERSION} https://github.com/tiann/KernelSU.git KernelSU
+        CONFIG_FILE="arch/${ARCH}/configs/${KERNEL_DEFCONFIG}"
+        if [ -f "$CONFIG_FILE" ]; then
+          echo -e "\n# KernelSU" >> "$CONFIG_FILE"
+          echo "CONFIG_KERNELSU=y" >> "$CONFIG_FILE"
+          echo "CONFIG_KPROBES=y" >> "$CONFIG_FILE"
+          echo "CONFIG_HAVE_KPROBES=y" >> "$CONFIG_FILE"
+        else
+          echo "Error: Defconfig not found at $CONFIG_FILE" >&2
+          exit 1
+        fi
+        echo "KSU_PATCH_PATH=$(realpath KernelSU)" >> $GITHUB_ENV
+
+    - name: Build kernel
+      run: |
+        set -eo pipefail
+        export PATH="$(pwd)/toolchain/bin:$PATH"
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        mkdir -p kernel_out
+
+        make mrproper
+        make O=out ARCH=${ARCH} ${KERNEL_DEFCONFIG}
+        grep -q "CONFIG_KERNELSU=y" out/.config || (echo "✗ KernelSU not enabled." && exit 1)
+
+        make -j$(nproc) O=out ARCH=${ARCH} CC=clang LLVM=1 KERNELSU=1 | tee build.log
+
+        if [ -f "out/arch/${ARCH}/boot/Image.gz-dtb" ]; then
+          cp out/arch/${ARCH}/boot/Image.gz-dtb kernel_out/
+        elif [ -f "out/arch/${ARCH}/boot/Image-dtb" ]; then
+          gzip -c out/arch/${ARCH}/boot/Image-dtb > kernel_out/Image.gz-dtb
+        elif [ -f "out/arch/${ARCH}/boot/Image.gz" ] && [ -f "out/arch/${ARCH}/boot/dtb" ]; then
+          cat out/arch/${ARCH}/boot/Image.gz out/arch/${ARCH}/boot/dtb > kernel_out/Image.gz-dtb
+        else
+          echo "✗ Kernel build failed." >&2
+          exit 1
+        fi
+
+    - name: Download and Repack Boot Image
+      run: |
+        set -e
+        mkdir -p stock_boot boot_work
+        wget -O stock_boot/boot.img "${{ env.STOCK_BOOT_URL }}"
+        [ -s stock_boot/boot.img ] || (echo "✗ Boot.img download failed" && exit 1)
+        python3 tools/unpack_bootimg/unpack_bootimg.py --boot_img stock_boot/boot.img --out boot_work
+        source boot_work/board_vars.env
+
+        if [ ! -f "boot_work/ramdisk.gz" ]; then
+          mkdir empty_ramdisk && cd empty_ramdisk
+          echo "#!/system/bin/sh" > init
+          find . | cpio -o -H newc | gzip > ../boot_work/ramdisk.gz
+          cd ..
+        fi
+
+        python3 tools/mkbootimg/mkbootimg.py \
+          --kernel kernel_out/Image.gz-dtb \
+          --ramdisk boot_work/ramdisk.gz \
+          --cmdline "$CMDLINE" \
+          --base "$BASE" \
+          --pagesize "$PAGESIZE" \
+          --header_version "$HEADER_VERSION" \
+          --ramdisk_offset "$RAMDISK_OFFSET" \
+          --tags_offset "$TAGS_OFFSET" \
+          --os_version "12.0.0" \
+          --os_patch_level "2025-08" \
+          --output boot_kernelsu.img
+
+    - name: Prepare Release Artifacts
+      run: |
+        KSU_VERSION="${{ github.event.inputs.kernelsu_version || 'v0.9.5' }}"
+        COMMIT_SHA=$(git rev-parse --short HEAD)
+        mv kernel_out/Image.gz-dtb .
+        sha256sum boot_kernelsu.img Image.gz-dtb > SHA256SUMS.txt
+        cat > release_info.md << EOF
+        # KernelSU Build: ${KSU_VERSION}
+        - **Build Date:** $(date -u)
+        - **KernelSU Version:** ${KSU_VERSION}
+        - **Source Commit:** \`${COMMIT_SHA}\`
+        - **Device:** OnePlus Nord N200 (holi)
+        - **Kernel Config:** \`${{ env.KERNEL_DEFCONFIG }}\`
+
+        ### Files
+        - \`boot_kernelsu.img\`: Flash via fastboot.
+        - \`KernelSU-flashable.zip\`: Flashable in recovery.
+        - \`Image.gz-dtb\`: Raw kernel image.
+        - \`build.log\`, \`SHA256SUMS.txt\`
+
+        ### Flashing Instructions
+        - Fastboot: \`fastboot flash boot boot_kernelsu.img\`
+        - Recovery: Flash \`KernelSU-flashable.zip\`
+        - Then install KernelSU Manager APK.
+
+        **Disclaimer:** Flash at your own risk.
+        EOF
+
+    - name: Package with AnyKernel3
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3
+
+        echo "Customizing anykernel.sh for Nord N200 (holi)..."
+        cat > anykernel3/anykernel.sh << 'EOS'
+#!/sbin/sh
+properties() {
+  kernel.string=KernelSU-enabled kernel for Nord N200
+  do.devicecheck=1
+  device.name1=holi
+  device.name2=OnePlusNordN200
+  device.name3=n200
+  supported.versions=
+  supported.patchlevels=
+  is_slot_device=1
+  no_kernel_image=0
+  block=/dev/block/bootdevice/by-name/boot
+  is_image_slot_device=1
+}
+block=boot;
+ramdisk_compression=auto
+. tools/ak3-core.sh
+dump_boot;
+write_boot;
+EOS
+
+        cp Image.gz-dtb anykernel3/zImage
+        cd anykernel3
+        zip -r9 ../KernelSU-flashable.zip ./*
+        cd ..
+
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernelsu-build-${{ github.run_number }}
+        path: |
+          boot_kernelsu.img
+          KernelSU-flashable.zip
+          Image.gz-dtb
+          build.log
+          SHA256SUMS.txt
+          release_info.md
+        retention-days: 30
+
+    - name: Upload Debug Logs on Failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-logs-${{ github.run_number }}
+        path: |
+          out/.config
+          boot_work/
+        retention-days: 5
