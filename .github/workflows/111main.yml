@@ -24,7 +24,7 @@ jobs:
       if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p clang && cd clang
-        wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
+                wget -L https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
         tar -xf clang-llvm-17.0.6.tar.xz
         rm clang-llvm-17.0.6.tar.xz
 
