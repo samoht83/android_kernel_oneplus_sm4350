@@ -72,7 +72,7 @@ jobs:
           CONFIG_ELFCORE=y
           CONFIG_PROC_FS=y
           CONFIG_TMPFS=y
-EOF
+          EOF
 
       - name: Build kernel
         run: |
@@ -117,7 +117,7 @@ EOF
                   print(f"Usage: {sys.argv[0]} boot.img output_dir")
                   sys.exit(1)
               unpack_boot_img(sys.argv[1], sys.argv[2])
-EOF
+          EOF
           chmod +x tools/unpack_bootimg/unpack_bootimg.py
 
       - name: Unpack boot.img
