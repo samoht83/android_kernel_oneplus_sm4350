@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout kernel source
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Install dependencies
@@ -27,60 +27,38 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils
 
-    
-    name: Build with Cached Toolchain
-
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cache Clang Toolchain  Cache 🛠️
-        id: cache-clang # Give the step an ID to check its output
-        uses: actions/cache@v4
-        with:
-          
+    - name: Cache Clang Toolchain 🛠️
+      id: cache-clang
+      uses: actions/cache@v4
+      with:
         path: toolchain/linux-x86
-          # The key to identify the cache. Changing the tag will create a new cache.
-         key: ${{ runner.os }}-clang-android-14.0.0_r50
+        key: ${{ runner.os }}-clang-android-14.0.0_r50
 
-      - name: Download Clang Toolchain (if not cached)
-        # This step only runs if the cache step did NOT find a match
-        if: steps.cache-clang.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p toolchain
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50 toolchain/linux-x86 --depth=1
+    - name: Download Clang Toolchain (if not cached)
+      if: steps.cache-clang.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p toolchain
+        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50 toolchain/linux-x86 --depth=1
 
-      - name: Verify Toolchain
-        run: |
-          echo "Toolchain binaries:"
-          ls toolchain/linux-x86/bin
-
-        # Download mkbootimg
-        echo "Setting up mkbootimg..."
-        git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
-        
-        # Create unpack_bootimg script
-        mkdir -p tools/unpack_bootimg
-        cat > tools/unpack_bootimg/unpack_bootimg.py << 'EOF'
+    - name: Verify Toolchain
+      run: ls toolchain/linux-x86/clang-r*/bin
 
     - name: Clone KernelSU
       run: |
         git clone --depth=1 --branch ${{ github.event.inputs.kernelsu_version }} https://github.com/KernelSU/KernelSU.git kernelsu
-        echo "CONFIG_KPROBES=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_KERNELSU=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_KERNELSU_MODULE_SEPARATED=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_MODULES=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_MODULE_UNLOAD=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_ELFCORE=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_PROC_FS=y" >> arch/arm64/configs/n200_defconfig
-        echo "CONFIG_TMPFS=y" >> arch/arm64/configs/n200_defconfig
+        echo 'Appending KernelSU config to defconfig...'
+        tee -a arch/arm64/configs/n200_defconfig > /dev/null <<EOF
+        CONFIG_KPROBES=y
+        CONFIG_HAVE_KPROBES=y
+        CONFIG_KPROBE_EVENTS=y
+        CONFIG_KERNELSU=y
+        CONFIG_KERNELSU_MODULE_SEPARATED=y
+        CONFIG_MODULES=y
+        CONFIG_MODULE_UNLOAD=y
+        CONFIG_ELFCORE=y
+        CONFIG_PROC_FS=y
+        CONFIG_TMPFS=y
+        EOF
 
     - name: Apply KernelSU patch
       run: |
@@ -89,11 +67,12 @@ jobs:
 
     - name: Build kernel
       run: |
-        export PATH=$GITHUB_WORKSPACE/toolchain/clang-llvm/bin:$PATH
+        export PATH=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r*/bin:$PATH
         export ARCH=arm64
         export SUBARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-gnu-
         export CC=clang
+        export CROSS_COMPILE=aarch64-linux-android-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
         make O=out n200_defconfig
         make -j$(nproc) O=out CC=clang LLVM=1
 
@@ -103,7 +82,8 @@ jobs:
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock/boot.img
 
     - name: Clone mkbootimg
-      run: git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
+      run: |
+        git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
 
     - name: Add unpack_bootimg.py
       run: |
@@ -119,7 +99,6 @@ jobs:
                 if magic != b'ANDROID!':
                     print("Not a valid Android boot image.", file=sys.stderr)
                     return False
-                # Minimal stub (replace with full parser for real use)
                 with open(os.path.join(out_dir, 'stub_notice.txt'), 'w') as note:
                     note.write("This is a placeholder unpack. Please replace with full parser.")
                 return True
@@ -150,7 +129,7 @@ jobs:
           --pagesize 4096 \
           --output new-boot.img
 
-    - name: Upload boot.img
+    - name: Upload repacked boot image
       uses: actions/upload-artifact@v4
       with:
         name: KernelSU-Boot-Image
