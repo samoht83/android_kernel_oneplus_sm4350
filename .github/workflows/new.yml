@@ -28,23 +28,39 @@ jobs:
         sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils
 
     
-    - name: Cache toolchain
-      id: cache-toolchain
-      uses: actions/cache@v4
-      with:
-        path: |
-          toolchain
-          tools
-        key: android-toolchain-clang17-v1
+    name: Build with Cached Toolchain
 
-    - name: Setup toolchain
-      if: steps.cache-toolchain.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p toolchain tools
-        
-        # Download Clang toolchain
-        echo "Downloading Clang toolchain..."
-        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Clang Toolchain  Cache 🛠️
+        id: cache-clang # Give the step an ID to check its output
+        uses: actions/cache@v4
+        with:
+          # The path to the directory to cache
+          path: toolchain/linux-x86
+          # The key to identify the cache. Changing the tag will create a new cache.
+          key: ${{ runner.os }}-clang-android-14.0.0_r50
+
+      - name: Download Clang Toolchain (if not cached)
+        # This step only runs if the cache step did NOT find a match
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchain
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50 toolchain/linux-x86 --depth=1
+
+      - name: Verify Toolchain
+        run: |
+          echo "Toolchain binaries:"
+          ls toolchain/linux-x86/bin
+
 
         
         # Download mkbootimg
