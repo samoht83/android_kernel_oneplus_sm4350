@@ -45,7 +45,7 @@ jobs:
 
     - name: Clone KernelSU
       run: |
-        git clone --depth=1 --branch v0.9.5 https://github.com/KernelSU/KernelSU.git kernelsu
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
         echo 'Appending KernelSU config to defconfig...'
         tee -a arch/arm64/configs/n200_defconfig > /dev/null <<EOF
         CONFIG_KPROBES=y
