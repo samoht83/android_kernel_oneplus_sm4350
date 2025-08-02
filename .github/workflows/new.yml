@@ -30,7 +30,6 @@ jobs:
     
     name: Build with Cached Toolchain
 
-on: [push, pull_request]
 
 jobs:
   build:
