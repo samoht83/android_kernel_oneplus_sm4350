@@ -60,10 +60,6 @@ jobs:
         CONFIG_TMPFS=y
         EOF
 
-    - name: Apply KernelSU patch
-      run: |
-        cd kernelsu
-        ./setup.sh ../
 
     - name: Build kernel
       run: |
