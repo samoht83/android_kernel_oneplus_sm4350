@@ -43,6 +43,20 @@ jobs:
     - name: Verify Toolchain
       run: ls toolchain/linux-x86/clang-r*/bin
 
+    - name: Set up GCC Cross-Compiler
+      run: |
+      git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc
+    echo "$GITHUB_WORKSPACE/gcc/bin" >> $GITHUB_PATH
+
+    - name: Export Build Environment
+      run: |
+    echo "ARCH=arm64" >> $GITHUB_ENV
+    echo "SUBARCH=arm64" >> $GITHUB_ENV
+    echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+    echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
+    echo "CC=clang" >> $GITHUB_ENV
+    echo "$GITHUB_WORKSPACE/clang/clang-llvm-17.0.6/bin" >> $GITHUB_PATH
+
     - name: Clone KernelSU
       run: |
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
