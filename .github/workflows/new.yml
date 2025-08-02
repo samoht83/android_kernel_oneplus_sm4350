@@ -27,12 +27,34 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils
 
-    - name: Download Clang 17 toolchain
+    
+    - name: Cache toolchain
+      id: cache-toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          toolchain
+          tools
+        key: android-toolchain-clang17-v1
+
+    - name: Setup toolchain
+      if: steps.cache-toolchain.outputs.cache-hit != 'true'
       run: |
-        mkdir -p toolchain
-        wget -O clang.tar.gz https://github.com/its-pointless/clang-for-android/releases/download/17.0.6/clang-llvm-17.0.6.tar.xz
-        tar -xf clang.tar.gz -C toolchain/
+        mkdir -p toolchain tools
+        
+        # Download Clang toolchain
+        echo "Downloading Clang toolchain..."
+        wget -O clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r487747.tar.gz"
+        tar -xzf clang.tar.gz -C toolchain/
         rm clang.tar.gz
+        
+        # Download mkbootimg
+        echo "Setting up mkbootimg..."
+        git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
+        
+        # Create unpack_bootimg script
+        mkdir -p tools/unpack_bootimg
+        cat > tools/unpack_bootimg/unpack_bootimg.py << 'EOF'
 
     - name: Clone KernelSU
       run: |
