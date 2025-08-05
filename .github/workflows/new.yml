@@ -42,11 +42,12 @@ jobs:
           mkdir -p toolchain
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50 toolchain/linux-x86 --depth=1
 
-      - name: Set up Clang path
+      - name: Set up Clang path and linker
         run: |
           CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
           echo "$CLANG_BIN" >> $GITHUB_PATH
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          echo "LD=ld.lld" >> $GITHUB_ENV
 
       - name: Set up GCC Cross-Compiler
         run: |
@@ -57,9 +58,8 @@ jobs:
         run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CC=clang" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
 
       - name: Clone and Set Up KernelSU
         run: |
@@ -80,8 +80,8 @@ jobs:
 
       - name: Build Kernel
         run: |
-          make O=out LLVM=1 LLVM_IAS=1 n200_defconfig
-          make -j$(nproc) O=out LLVM=1 LLVM_IAS=1
+          make O=out n200_defconfig
+          make -j$(nproc) O=out
 
       - name: Download Stock Boot Image
         run: |
