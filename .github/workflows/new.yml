@@ -80,8 +80,8 @@ jobs:
 
       - name: Build Kernel
         run: |
-          make O=out n200_defconfig
-          make -j$(nproc) O=out CC=clang LLVM=1
+          make O=out LLVM=1 LLVM_IAS=1 n200_defconfig
+make -j$(nproc) O=out LLVM=1 LLVM_IAS=1
 
       - name: Download Stock Boot Image
         run: |
