@@ -80,8 +80,7 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export CC=clang
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export  CLANG_TRIPLE=aarch64-linux-gnu-
           make O=out n200_defconfig
           make -j$(nproc) O=out CC=clang LLVM=1
 
