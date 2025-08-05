@@ -11,7 +11,7 @@ on:
       stock_boot_url:
         description: 'URL to the stock boot.img for repacking'
         required: true
-        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/blob/lineage-22.2/stock/original_boot.img'
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/blob/lineage-22.2/stock/original_boot.img?raw=true'
         type: string
 
 jobs:
@@ -33,6 +33,8 @@ jobs:
         with:
           path: toolchain/linux-x86
           key: ${{ runner.os }}-clang-android-14.0.0_r50
+          restore-keys: |
+            ${{ runner.os }}-clang-android-
 
       - name: Download Clang Toolchain (if not cached)
         if: steps.cache-clang.outputs.cache-hit != 'true'
@@ -40,8 +42,11 @@ jobs:
           mkdir -p toolchain
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50 toolchain/linux-x86 --depth=1
 
-      - name: Verify Toolchain
-        run: ls toolchain/linux-x86/clang-r*/bin
+      - name: Set up Clang path
+        run: |
+          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
+          echo "$CLANG_BIN" >> $GITHUB_PATH
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
 
       - name: Set up GCC Cross-Compiler
         run: |
@@ -55,9 +60,8 @@ jobs:
           echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
           echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
-          echo "$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r*/bin" >> $GITHUB_PATH
 
-      - name: Clone KernelSU
+      - name: Clone and Set Up KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.kernelsu_version }}
           echo 'Appending KernelSU config to defconfig...'
@@ -74,70 +78,39 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Build kernel
+      - name: Build Kernel
         run: |
-          export PATH=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r*/bin:$PATH
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CC=clang
-          export  CLANG_TRIPLE=aarch64-linux-gnu-
           make O=out n200_defconfig
           make -j$(nproc) O=out CC=clang LLVM=1
 
-      - name: Download stock boot image
+      - name: Download Stock Boot Image
         run: |
           mkdir stock
           curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock/boot.img
 
-      - name: Clone mkbootimg
+      - name: Install MagiskBoot
         run: |
-          git clone --depth=1 https://github.com/osm0sis/mkbootimg.git tools/mkbootimg
+          curl -LO https://raw.githubusercontent.com/topjohnwu/magisk-files/main/tools/magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
 
-      - name: Add unpack_bootimg.py
-        run: |
-          mkdir -p tools/unpack_bootimg
-          cat > tools/unpack_bootimg/unpack_bootimg.py << 'EOF'
-          #!/usr/bin/env python3
-          import os, sys, struct
-
-          def unpack_boot_img(boot_img_path, out_dir):
-              os.makedirs(out_dir, exist_ok=True)
-              with open(boot_img_path, 'rb') as f:
-                  magic = f.read(8)
-                  if magic != b'ANDROID!':
-                      print("Not a valid Android boot image.", file=sys.stderr)
-                      return False
-                  with open(os.path.join(out_dir, 'stub_notice.txt'), 'w') as note:
-                      note.write("This is a placeholder unpack. Please replace with full parser.")
-                  return True
-
-          if __name__ == '__main__':
-              if len(sys.argv) != 3:
-                  print(f"Usage: {sys.argv[0]} boot.img output_dir")
-                  sys.exit(1)
-              unpack_boot_img(sys.argv[1], sys.argv[2])
-          EOF
-          chmod +x tools/unpack_bootimg/unpack_bootimg.py
-
-      - name: Unpack boot.img
+      - name: Unpack stock boot.img using MagiskBoot
         run: |
           mkdir extracted
-          python3 tools/unpack_bootimg/unpack_bootimg.py stock/boot.img extracted
+          cd extracted
+          magiskboot unpack ../stock/boot.img
 
-      - name: Replace kernel image
+      - name: Replace kernel with built Image
         run: |
-          cp out/arch/arm64/boot/Image extracted/Image
+          cp out/arch/arm64/boot/Image extracted/kernel
 
-      - name: Repack boot image
+      - name: Repack boot.img using original parameters
         run: |
-          tools/mkbootimg/mkbootimg.py \
-            --kernel extracted/Image \
-            --ramdisk extracted/ramdisk \
-            --base 0x00000000 \
-            --pagesize 4096 \
-            --output new-boot.img
+          cd extracted
+          magiskboot repack ../stock/boot.img
+          cp new-boot.img ../new-boot.img
 
-      - name: Upload repacked boot image
+      - name: Upload Repacked Boot Image
         uses: actions/upload-artifact@v4
         with:
           name: KernelSU-Boot-Image
