@@ -47,7 +47,7 @@ jobs:
           CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
           echo "$CLANG_BIN" >> $GITHUB_PATH
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
-          echo "LD=ld.lld" >> $GITHUB_ENV
+          echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
 
       - name: Set up GCC Cross-Compiler
         run: |
