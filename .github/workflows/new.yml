@@ -98,8 +98,24 @@ jobs:
 
       - name: Build Kernel
         run: |
-          make O=out n200_defconfig
-          make -j$(nproc) O=out
+          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
+          make O=out \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            LD=$CLANG_BIN/ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip \
+            n200_defconfig
+          make -j$(nproc) O=out \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            LD=$CLANG_BIN/ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip
 
       - name: Download Stock Boot Image
         run: |
