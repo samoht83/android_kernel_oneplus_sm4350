@@ -54,6 +54,17 @@ jobs:
           git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc
           echo "$GITHUB_WORKSPACE/gcc/bin" >> $GITHUB_PATH
 
+      - name: Set up Clang and LLVM tools
+        run: |
+          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
+          echo "$CLANG_BIN" >> $GITHUB_PATH
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
+          echo "AR=$CLANG_BIN/llvm-ar" >> $GITHUB_ENV
+          echo "NM=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
+          echo "OBJDUMP=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
+
       - name: Export Build Environment
         run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
