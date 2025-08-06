@@ -41,6 +41,13 @@ jobs:
         run: |
           mkdir -p toolchain
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android-14.0.0_r50 toolchain/linux-x86 --depth=1
+      
+      - name: Save Clang toolchain to cache
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: toolchain/linux-x86
+          key: ${{ runner.os }}-clang-android-14.0.0_r50
 
       - name: Set up Clang path and linker
         run: |
