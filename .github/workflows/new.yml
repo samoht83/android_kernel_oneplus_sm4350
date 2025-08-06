@@ -44,6 +44,11 @@ jobs:
           curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r510928.tar.gz
           tar -xzf clang-r510928.tar.gz
           rm clang-r510928.tar.gz
+
+      - name: Fix Clang permissions and validate tools
+        run: |
+          chmod +x toolchain/linux-x86/clang-r510928/bin/*
+          ls -l toolchain/linux-x86/clang-r510928/bin/ld.lld
       
       - name: Save Clang toolchain to cache
         if: steps.cache-clang.outputs.cache-hit != 'true'
