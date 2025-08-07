@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file
 
       - name: Cache Vichy Clang Toolchain
         id: cache-clang
@@ -41,7 +41,11 @@ jobs:
         run: |
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
-          curl -LJO -H 'Accept: application/octet-stream' https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz
+          wget https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz
+          if ! file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
+            echo "Downloaded file is not a valid gzip archive!"
+            exit 1
+          fi
           tar -xzf clang-r510928.tar.gz
           rm clang-r510928.tar.gz
           chmod +x clang-r510928/bin/*
