@@ -37,8 +37,8 @@ jobs:
             ${{ runner.os }}-vichy-clang-
 
       - name: Download and Extract Vichy Clang
-  if: steps.cache-clang.outputs.cache-hit != 'true'
-  run: |
+          if: steps.cache-clang.outputs.cache-hit != 'true'
+         run: |
     mkdir -p toolchain/linux-x86
     cd toolchain/linux-x86
     curl -LJO -H 'Accept: application/octet-stream' https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz
