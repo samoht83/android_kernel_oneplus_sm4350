@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld file
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
 
       - name: Cache Vichy Clang Toolchain
         id: cache-clang
@@ -41,13 +41,13 @@ jobs:
         run: |
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
-          wget https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-510928.tar.gz
-          if ! file clang-510928.tar.gz | grep -q 'gzip compressed data'; then
+          wget https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz
+          if ! file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
             echo "Downloaded file is not a valid gzip archive!"
             exit 1
           fi
-          tar -xzf clang-510928.tar.gz
-          rm clang-510928.tar.gz
+          tar -xzf clang-r510928.tar.gz
+          rm clang-r510928.tar.gz
           chmod +x clang-r510928/bin/*
 
       - name: Save Vichy Clang to Cache
@@ -99,48 +99,3 @@ jobs:
           make O=out \
             LLVM=1 LLVM_IAS=1 \
             LD=$CLANG_BIN/ld.lld \
-            AR=$CLANG_BIN/llvm-ar \
-            NM=$CLANG_BIN/llvm-nm \
-            OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip \
-            n200_defconfig
-          make -j$(nproc) O=out \
-            LLVM=1 LLVM_IAS=1 \
-            LD=$CLANG_BIN/ld.lld \
-            AR=$CLANG_BIN/llvm-ar \
-            NM=$CLANG_BIN/llvm-nm \
-            OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip
-
-      - name: Download Stock Boot Image
-        run: |
-          mkdir stock
-          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock/boot.img
-
-      - name: Install MagiskBoot
-        run: |
-          curl -LO https://raw.githubusercontent.com/topjohnwu/magisk-files/main/tools/magiskboot
-          chmod +x magiskboot
-          sudo mv magiskboot /usr/local/bin/
-
-      - name: Unpack stock boot.img using MagiskBoot
-        run: |
-          mkdir extracted
-          cd extracted
-          magiskboot unpack ../stock/boot.img
-
-      - name: Replace kernel with built Image
-        run: |
-          cp out/arch/arm64/boot/Image extracted/kernel
-
-      - name: Repack boot.img using original parameters
-        run: |
-          cd extracted
-          magiskboot repack ../stock/boot.img
-          cp new-boot.img ../new-boot.img
-
-      - name: Upload Repacked Boot Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: KernelSU-Boot-Image
-          path: new-boot.img
