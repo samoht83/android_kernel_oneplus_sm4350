@@ -45,10 +45,13 @@ jobs:
           tar -xzf clang-r510928.tar.gz
           rm clang-r510928.tar.gz
 
-      - name: Fix Clang permissions and validate tools
+      - name: Fix permissions and validate Clang tools
         run: |
-          chmod +x toolchain/linux-x86/clang-r510928/bin/*
-          ls -l toolchain/linux-x86/clang-r510928/bin/ld.lld
+          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
+          chmod +x $CLANG_BIN/*
+          echo "Checking ld.lld presence:"
+          ls -l $CLANG_BIN/ld.lld || { echo "❌ ld.lld not found"; exit 1; }
+          file $CLANG_BIN/ld.lld || true
       
       - name: Save Clang toolchain to cache
         if: steps.cache-clang.outputs.cache-hit != 'true'
