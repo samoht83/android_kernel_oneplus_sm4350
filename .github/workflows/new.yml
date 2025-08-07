@@ -27,54 +27,35 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
 
-      - name: Cache Clang Toolchain 🛠️
+      - name: Cache Vichy Clang Toolchain
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: toolchain/linux-x86
-          key: ${{ runner.os }}-clang-android-14.0.0_r50
+          path: toolchain/linux-x86/clang-r510928
+          key: ${{ runner.os }}-vichy-clang-r510928
           restore-keys: |
-            ${{ runner.os }}-clang-android-
+            ${{ runner.os }}-vichy-clang-
 
-      - name: Download and Extract Clang 14
+      - name: Download and Extract Vichy Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
-          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r510928.tar.gz
+          curl -L -o clang-r510928.tar.gz https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz
           tar -xzf clang-r510928.tar.gz
           rm clang-r510928.tar.gz
+          chmod +x clang-r510928/bin/*
 
-      - name: Fix permissions and validate Clang tools
-        run: |
-          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
-          chmod +x $CLANG_BIN/*
-          echo "Checking ld.lld presence:"
-          ls -l $CLANG_BIN/ld.lld || { echo "❌ ld.lld not found"; exit 1; }
-          file $CLANG_BIN/ld.lld || true
-      
-      - name: Save Clang toolchain to cache
+      - name: Save Vichy Clang to Cache
         if: steps.cache-clang.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: toolchain/linux-x86
-          key: ${{ runner.os }}-clang-android-14.0.0_r50
+          path: toolchain/linux-x86/clang-r510928
+          key: ${{ runner.os }}-vichy-clang-r510928
 
-      - name: Set up Clang path and linker
+      - name: Set up Environment
         run: |
-          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
-          echo "$CLANG_BIN" >> $GITHUB_PATH
-          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
-          echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
-
-      - name: Set up GCC Cross-Compiler
-        run: |
-          git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc
-          echo "$GITHUB_WORKSPACE/gcc/bin" >> $GITHUB_PATH
-
-      - name: Set up Clang and LLVM tools
-        run: |
-          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r510928/bin
           echo "$CLANG_BIN" >> $GITHUB_PATH
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
           echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
@@ -82,13 +63,15 @@ jobs:
           echo "NM=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
           echo "OBJDUMP=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
           echo "STRIP=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
-
-      - name: Export Build Environment
-        run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
+
+      - name: Set up GCC Cross-Compiler
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc
+          echo "$GITHUB_WORKSPACE/gcc/bin" >> $GITHUB_PATH
 
       - name: Clone and Set Up KernelSU
         run: |
@@ -109,10 +92,8 @@ jobs:
 
       - name: Build Kernel
         run: |
-          CLANG_BIN=$(find toolchain/linux-x86/ -type d -name "clang-r*" | head -n 1)/bin
           make O=out \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            LLVM=1 LLVM_IAS=1 \
             LD=$CLANG_BIN/ld.lld \
             AR=$CLANG_BIN/llvm-ar \
             NM=$CLANG_BIN/llvm-nm \
@@ -120,8 +101,7 @@ jobs:
             STRIP=$CLANG_BIN/llvm-strip \
             n200_defconfig
           make -j$(nproc) O=out \
-            LLVM=1 \
-            LLVM_IAS=1 \
+            LLVM=1 LLVM_IAS=1 \
             LD=$CLANG_BIN/ld.lld \
             AR=$CLANG_BIN/llvm-ar \
             NM=$CLANG_BIN/llvm-nm \
