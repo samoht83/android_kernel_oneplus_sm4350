@@ -27,39 +27,47 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
 
-      - name: Cache Vichy Clang Toolchain
+      - name: Cache Clang Toolchain
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: toolchain/linux-x86/clang-r510928
-          key: ${{ runner.os }}-vichy-clang-r510928
+          path: toolchain/linux-x86/clang
+          key: ${{ runner.os }}-clang-18-v2
           restore-keys: |
-            ${{ runner.os }}-vichy-clang-
+            ${{ runner.os }}-clang-18-
 
-      - name: Download and Extract Vichy Clang
+      - name: Download and Extract Clang Toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
-          wget https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz
-          if ! file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
-            echo "Downloaded file is not a valid gzip archive!"
-            exit 1
+          
+          # Option 1: Try the original Vichy repo with error handling
+          echo "Attempting to download from Vichy repo..."
+          if wget -q --spider "https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-510928.tar.gz" 2>/dev/null; then
+            wget https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-510928.tar.gz
+            tar -xzf clang-510928.tar.gz
+            mv clang-r510928 clang
+            rm clang-510928.tar.gz
+          else
+            echo "Vichy repo unavailable, using LLVM official release..."
+            # Option 2: Use official LLVM prebuilt
+            wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04 clang
+            rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
           fi
-          tar -xzf clang-r510928.tar.gz
-          rm clang-r510928.tar.gz
-          chmod +x clang-r510928/bin/*
+          
+          chmod +x clang/bin/*
 
-      - name: Save Vichy Clang to Cache
-        if: steps.cache-clang.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: toolchain/linux-x86/clang-r510928
-          key: ${{ runner.os }}-vichy-clang-r510928
+      - name: Verify Clang Installation
+        run: |
+          ls -la toolchain/linux-x86/clang/bin/
+          toolchain/linux-x86/clang/bin/clang --version
 
       - name: Set up Environment
         run: |
-          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r510928/bin
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
           echo "$CLANG_BIN" >> $GITHUB_PATH
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
           echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
@@ -99,3 +107,108 @@ jobs:
           make O=out \
             LLVM=1 LLVM_IAS=1 \
             LD=$CLANG_BIN/ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip \
+            CC=$CLANG_BIN/clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            n200_defconfig
+          
+          make O=out \
+            LLVM=1 LLVM_IAS=1 \
+            LD=$CLANG_BIN/ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip \
+            CC=$CLANG_BIN/clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            -j$(nproc)
+
+      - name: Check Build Output
+        run: |
+          ls -la out/arch/arm64/boot/
+          if [ -f out/arch/arm64/boot/Image ]; then
+            echo "Kernel build successful!"
+            echo "Image size: $(stat -c%s out/arch/arm64/boot/Image) bytes"
+          else
+            echo "Kernel build failed - Image not found"
+            exit 1
+          fi
+
+      - name: Download Stock Boot Image
+        run: |
+          wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
+          ls -la stock_boot.img
+
+      - name: Install AIK (Android Image Kitchen)
+        run: |
+          wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
+          unzip master.zip
+          mv AIK-Linux-master AIK
+          chmod +x AIK/*.sh
+
+      - name: Unpack Stock Boot Image
+        run: |
+          cd AIK
+          ./unpackimg.sh ../stock_boot.img
+          ls -la split_img/
+
+      - name: Replace Kernel in Boot Image
+        run: |
+          cp out/arch/arm64/boot/Image AIK/split_img/stock_boot.img-kernel
+          echo "Kernel replaced successfully"
+
+      - name: Repack Boot Image
+        run: |
+          cd AIK
+          ./repackimg.sh
+          ls -la image-new.img
+          mv image-new.img ../kernelsu_boot.img
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-kernel-${{ inputs.kernelsu_version }}
+          path: |
+            out/arch/arm64/boot/Image
+            kernelsu_boot.img
+            out/.config
+          retention-days: 30
+
+      - name: Create Release (Optional)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernelsu-${{ inputs.kernelsu_version }}-${{ github.run_number }}
+          name: KernelSU Build ${{ inputs.kernelsu_version }}
+          body: |
+            ## KernelSU Kernel Build
+            
+            **KernelSU Version:** ${{ inputs.kernelsu_version }}
+            **Build Date:** ${{ github.event.head_commit.timestamp }}
+            **Commit:** ${{ github.sha }}
+            
+            ### Files:
+            - `Image`: Raw kernel image
+            - `kernelsu_boot.img`: Repacked boot image ready to flash
+            - `.config`: Kernel configuration used
+            
+            ### Installation:
+            Flash `kernelsu_boot.img` to your boot partition using fastboot or recovery.
+            
+          files: |
+            out/arch/arm64/boot/Image
+            kernelsu_boot.img
+            out/.config
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
