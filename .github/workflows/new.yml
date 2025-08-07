@@ -1,3 +1,7 @@
+#
+# Complete GitHub Actions Workflow
+# Builds a Kernel with KernelSU and Repacks a Stock Boot Image
+#
 name: Build KernelSU Kernel and Repack Boot Image
 
 on:
@@ -31,43 +35,42 @@ jobs:
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: toolchain/linux-x86/clang
-          key: ${{ runner.os }}-clang-18-v2
-          restore-keys: |
-            ${{ runner.os }}-clang-18-
+          path: toolchain/linux-x86/clang-r510928
+          key: ${{ runner.os }}-clang-r510928
 
-      - name: Download and Extract Clang Toolchain
+      - name: Download and Extract Clang
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
           
-          # Option 1: Try the original Vichy repo with error handling
-          echo "Attempting to download from Vichy repo..."
-          if wget -q --spider "https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-510928.tar.gz" 2>/dev/null; then
-            wget https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-510928.tar.gz
-            tar -xzf clang-510928.tar.gz
-            mv clang-r510928 clang
-            rm clang-510928.tar.gz
+          # This is the primary URL for the toolchain from your original workflow
+          PRIMARY_URL="https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz"
+          
+          # This is the corrected fallback URL for the official LLVM 18.1.8 toolchain
+          # It now points to the ubuntu-22.04 version, which is compatible with the runner
+          FALLBACK_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+
+          echo "Attempting to download from primary URL..."
+          if wget --spider "$PRIMARY_URL" 2>/dev/null; then
+            echo "Primary URL is available. Downloading..."
+            wget -qO- "$PRIMARY_URL" | tar -xz
           else
-            echo "Vichy repo unavailable, using LLVM official release..."
-            # Option 2: Use official LLVM prebuilt
-            wget https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
-            tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
-            mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04 clang
-            rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-20.04.tar.xz
+            echo "Primary URL failed. Using official LLVM release as a fallback..."
+            wget -qO- "$FALLBACK_URL" | tar -xJ
+            # The extracted folder has a long name, so we rename it to 'clang-r510928' for consistency
+            mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang-r510928
           fi
           
-          chmod +x clang/bin/*
-
-      - name: Verify Clang Installation
-        run: |
-          ls -la toolchain/linux-x86/clang/bin/
-          toolchain/linux-x86/clang/bin/clang --version
+          echo "Setting executable permissions..."
+          chmod +x clang-r510928/bin/*
+      
+      # NOTE: The 'actions/cache/save' step is now part of 'actions/cache@v4'
+      # and is handled automatically post-job. No separate save step is needed.
 
       - name: Set up Environment
         run: |
-          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r510928/bin
           echo "$CLANG_BIN" >> $GITHUB_PATH
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
           echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
@@ -111,104 +114,44 @@ jobs:
             NM=$CLANG_BIN/llvm-nm \
             OBJDUMP=$CLANG_BIN/llvm-objdump \
             STRIP=$CLANG_BIN/llvm-strip \
-            CC=$CLANG_BIN/clang \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
             n200_defconfig
-          
-          make O=out \
+          make -j$(nproc) O=out \
             LLVM=1 LLVM_IAS=1 \
             LD=$CLANG_BIN/ld.lld \
             AR=$CLANG_BIN/llvm-ar \
             NM=$CLANG_BIN/llvm-nm \
             OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip \
-            CC=$CLANG_BIN/clang \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            -j$(nproc)
-
-      - name: Check Build Output
-        run: |
-          ls -la out/arch/arm64/boot/
-          if [ -f out/arch/arm64/boot/Image ]; then
-            echo "Kernel build successful!"
-            echo "Image size: $(stat -c%s out/arch/arm64/boot/Image) bytes"
-          else
-            echo "Kernel build failed - Image not found"
-            exit 1
-          fi
+            STRIP=$CLANG_BIN/llvm-strip
 
       - name: Download Stock Boot Image
         run: |
-          wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
-          ls -la stock_boot.img
+          mkdir stock
+          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock/boot.img
 
-      - name: Install AIK (Android Image Kitchen)
+      - name: Install MagiskBoot
         run: |
-          wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
-          unzip master.zip
-          mv AIK-Linux-master AIK
-          chmod +x AIK/*.sh
+          curl -LO https://raw.githubusercontent.com/topjohnwu/magisk-files/main/tools/magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
 
-      - name: Unpack Stock Boot Image
+      - name: Unpack stock boot.img using MagiskBoot
         run: |
-          cd AIK
-          ./unpackimg.sh ../stock_boot.img
-          ls -la split_img/
+          mkdir extracted
+          cd extracted
+          magiskboot unpack ../stock/boot.img
 
-      - name: Replace Kernel in Boot Image
+      - name: Replace kernel with built Image
         run: |
-          cp out/arch/arm64/boot/Image AIK/split_img/stock_boot.img-kernel
-          echo "Kernel replaced successfully"
+          cp ../out/arch/arm64/boot/Image ./kernel
 
-      - name: Repack Boot Image
+      - name: Repack boot.img using original parameters
         run: |
-          cd AIK
-          ./repackimg.sh
-          ls -la image-new.img
-          mv image-new.img ../kernelsu_boot.img
+          cd extracted
+          magiskboot repack ../stock/boot.img
+          mv new-boot.img ../new-boot.img
 
-      - name: Upload Artifacts
+      - name: Upload Repacked Boot Image
         uses: actions/upload-artifact@v4
         with:
-          name: kernelsu-kernel-${{ inputs.kernelsu_version }}
-          path: |
-            out/arch/arm64/boot/Image
-            kernelsu_boot.img
-            out/.config
-          retention-days: 30
-
-      - name: Create Release (Optional)
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: kernelsu-${{ inputs.kernelsu_version }}-${{ github.run_number }}
-          name: KernelSU Build ${{ inputs.kernelsu_version }}
-          body: |
-            ## KernelSU Kernel Build
-            
-            **KernelSU Version:** ${{ inputs.kernelsu_version }}
-            **Build Date:** ${{ github.event.head_commit.timestamp }}
-            **Commit:** ${{ github.sha }}
-            
-            ### Files:
-            - `Image`: Raw kernel image
-            - `kernelsu_boot.img`: Repacked boot image ready to flash
-            - `.config`: Kernel configuration used
-            
-            ### Installation:
-            Flash `kernelsu_boot.img` to your boot partition using fastboot or recovery.
-            
-          files: |
-            out/arch/arm64/boot/Image
-            kernelsu_boot.img
-            out/.config
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: KernelSU-Boot-Image
+          path: new-boot.img
