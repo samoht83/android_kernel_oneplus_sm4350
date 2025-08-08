@@ -193,35 +193,46 @@ jobs:
           echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
           echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV
 
-      - name: Build Kernel
+      - name: Fix Kernel Configuration
         run: |
-          make O=out \
-            LLVM=1 LLVM_IAS=1 \
-            LD=$CLANG_BIN/ld.lld \
-            AR=$CLANG_BIN/llvm-ar \
-            NM=$CLANG_BIN/llvm-nm \
-            OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip \
-            CC=$CLANG_BIN/clang \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            n200_defconfig
+          echo "Fixing missing symbol dependencies..."
           
+          # Add missing Qualcomm SMEM configuration
+          cat << 'EOF' >> arch/arm64/configs/n200_defconfig
+          # Qualcomm SMEM support (fixes qcom_smem_get)
+          CONFIG_QCOM_SMEM=y
+          CONFIG_QCOM_SMEM_PART=y
+          
+          # OPlus project support (fixes get_project)
+          CONFIG_OPLUS_SYSTEM_KERNEL_QCOM=y
+          CONFIG_OPLUS_FEATURE_PROJECTINFO=y
+          
+          # Alternative: disable problematic sensor driver if not needed
+          # CONFIG_OPLUS_SENSOR_DEVINFO=n
+          EOF
+          
+          echo "Updated defconfig with missing dependencies"
+
+      - name: Clean and Rebuild Configuration
+        run: |
+          # Clean the previous configuration
+          make O=out clean
+          
+          # Rebuild with updated config
           make O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
+            CC=$CLANG_BIN/clang \
             LD=$CLANG_BIN/ld.lld \
             AR=$CLANG_BIN/llvm-ar \
             NM=$CLANG_BIN/llvm-nm \
             OBJDUMP=$CLANG_BIN/llvm-objdump \
             STRIP=$CLANG_BIN/llvm-strip \
-            CC=$CLANG_BIN/clang \
+            OBJCOPY=$CLANG_BIN/llvm-objcopy \
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            -j$(nproc)
+            n200_defconfig
 
       - name: Check Build Output
         run: |
