@@ -1,7 +1,3 @@
-#
-# Complete GitHub Actions Workflow
-# Builds a Kernel with KernelSU and Repacks a Stock Boot Image
-#
 name: Build KernelSU Kernel and Repack Boot Image
 
 on:
@@ -35,42 +31,88 @@ jobs:
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: toolchain/linux-x86/clang-r510928
-          key: ${{ runner.os }}-clang-r510928
+          path: toolchain/linux-x86/clang
+          key: ${{ runner.os }}-clang-18-v2
+          restore-keys: |
+            ${{ runner.os }}-clang-18-
 
-      - name: Download and Extract Clang
+      - name: Download and Extract Clang Toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
           
-          # This is the primary URL for the toolchain from your original workflow
+          # Primary URL
           PRIMARY_URL="https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz"
-          
-          # This is the corrected fallback URL for the official LLVM 18.1.8 toolchain
-          # It now points to the ubuntu-22.04 version, which is compatible with the runner
+          # Fallback URL - using ubuntu-22.04 for GitHub Actions runners
           FALLBACK_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-
+          
           echo "Attempting to download from primary URL..."
           if wget --spider "$PRIMARY_URL" 2>/dev/null; then
             echo "Primary URL is available. Downloading..."
-            wget -qO- "$PRIMARY_URL" | tar -xz
+            wget "$PRIMARY_URL"
+            if file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
+              tar -xzf clang-r510928.tar.gz
+              mv clang-r510928 clang
+              rm clang-r510928.tar.gz
+            else
+              echo "Downloaded file is not a valid gzip archive!"
+              exit 1
+            fi
           else
-            echo "Primary URL failed. Using official LLVM release as a fallback..."
-            wget -qO- "$FALLBACK_URL" | tar -xJ
-            # The extracted folder has a long name, so we rename it to 'clang-r510928' for consistency
-            mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang-r510928
+            echo "Primary URL failed. Using official LLVM release as fallback..."
+            
+            # Download the fallback file
+            if wget "$FALLBACK_URL"; then
+              # Verify it's an xz file
+              if file clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz | grep -q 'XZ compressed data'; then
+                echo "Extracting LLVM toolchain..."
+                tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+                mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang
+                rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+              else
+                echo "Downloaded LLVM file is not a valid XZ archive!"
+                # Try alternative: use system clang as last resort
+                echo "Using system clang as last resort..."
+                mkdir -p clang/bin
+                sudo apt-get update
+                sudo apt-get install -y clang-18 lld-18
+                # Create symlinks to make it look like a regular toolchain
+                ln -s /usr/bin/clang-18 clang/bin/clang
+                ln -s /usr/bin/clang++-18 clang/bin/clang++
+                ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
+                ln -s /usr/bin/llvm-ar-18 clang/bin/llvm-ar
+                ln -s /usr/bin/llvm-nm-18 clang/bin/llvm-nm
+                ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
+                ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
+              fi
+            else
+              echo "Fallback download also failed. Using system clang..."
+              mkdir -p clang/bin
+              sudo apt-get update
+              sudo apt-get install -y clang-18 lld-18
+              # Create symlinks
+              ln -s /usr/bin/clang-18 clang/bin/clang
+              ln -s /usr/bin/clang++-18 clang/bin/clang++
+              ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
+              ln -s /usr/bin/llvm-ar-18 clang/bin/llvm-ar
+              ln -s /usr/bin/llvm-nm-18 clang/bin/llvm-nm
+              ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
+              ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
+            fi
           fi
           
           echo "Setting executable permissions..."
-          chmod +x clang-r510928/bin/*
-      
-      # NOTE: The 'actions/cache/save' step is now part of 'actions/cache@v4'
-      # and is handled automatically post-job. No separate save step is needed.
+          chmod +x clang/bin/* || true  # Don't fail if some files can't be made executable
+
+      - name: Verify Clang Installation
+        run: |
+          ls -la toolchain/linux-x86/clang/bin/
+          toolchain/linux-x86/clang/bin/clang --version
 
       - name: Set up Environment
         run: |
-          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r510928/bin
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
           echo "$CLANG_BIN" >> $GITHUB_PATH
           echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
           echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
@@ -114,44 +156,104 @@ jobs:
             NM=$CLANG_BIN/llvm-nm \
             OBJDUMP=$CLANG_BIN/llvm-objdump \
             STRIP=$CLANG_BIN/llvm-strip \
+            CC=$CLANG_BIN/clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
             n200_defconfig
-          make -j$(nproc) O=out \
+          
+          make O=out \
             LLVM=1 LLVM_IAS=1 \
             LD=$CLANG_BIN/ld.lld \
             AR=$CLANG_BIN/llvm-ar \
             NM=$CLANG_BIN/llvm-nm \
             OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip
+            STRIP=$CLANG_BIN/llvm-strip \
+            CC=$CLANG_BIN/clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
+            -j$(nproc)
+
+      - name: Check Build Output
+        run: |
+          ls -la out/arch/arm64/boot/
+          if [ -f out/arch/arm64/boot/Image ]; then
+            echo "Kernel build successful!"
+            echo "Image size: $(stat -c%s out/arch/arm64/boot/Image) bytes"
+          else
+            echo "Kernel build failed - Image not found"
+            exit 1
+          fi
 
       - name: Download Stock Boot Image
         run: |
-          mkdir stock
-          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock/boot.img
+          wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
+          ls -la stock_boot.img
 
-      - name: Install MagiskBoot
+      - name: Install AIK (Android Image Kitchen)
         run: |
-          curl -LO https://raw.githubusercontent.com/topjohnwu/magisk-files/main/tools/magiskboot
-          chmod +x magiskboot
-          sudo mv magiskboot /usr/local/bin/
+          wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
+          unzip master.zip
+          mv AIK-Linux-master AIK
+          chmod +x AIK/*.sh
 
-      - name: Unpack stock boot.img using MagiskBoot
+      - name: Unpack Stock Boot Image
         run: |
-          mkdir extracted
-          cd extracted
-          magiskboot unpack ../stock/boot.img
+          cd AIK
+          ./unpackimg.sh ../stock_boot.img
+          ls -la split_img/
 
-      - name: Replace kernel with built Image
+      - name: Replace Kernel in Boot Image
         run: |
-          cp ../out/arch/arm64/boot/Image ./kernel
+          cp out/arch/arm64/boot/Image AIK/split_img/stock_boot.img-kernel
+          echo "Kernel replaced successfully"
 
-      - name: Repack boot.img using original parameters
+      - name: Repack Boot Image
         run: |
-          cd extracted
-          magiskboot repack ../stock/boot.img
-          mv new-boot.img ../new-boot.img
+          cd AIK
+          ./repackimg.sh
+          ls -la image-new.img
+          mv image-new.img ../kernelsu_boot.img
 
-      - name: Upload Repacked Boot Image
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Boot-Image
-          path: new-boot.img
+          name: kernelsu-kernel-${{ inputs.kernelsu_version }}
+          path: |
+            out/arch/arm64/boot/Image
+            kernelsu_boot.img
+            out/.config
+          retention-days: 30
+
+      - name: Create Release (Optional)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: kernelsu-${{ inputs.kernelsu_version }}-${{ github.run_number }}
+          name: KernelSU Build ${{ inputs.kernelsu_version }}
+          body: |
+            ## KernelSU Kernel Build
+            
+            **KernelSU Version:** ${{ inputs.kernelsu_version }}
+            **Build Date:** ${{ github.event.head_commit.timestamp }}
+            **Commit:** ${{ github.sha }}
+            
+            ### Files:
+            - `Image`: Raw kernel image
+            - `kernelsu_boot.img`: Repacked boot image ready to flash
+            - `.config`: Kernel configuration used
+            
+            ### Installation:
+            Flash `kernelsu_boot.img` to your boot partition using fastboot or recovery.
+            
+          files: |
+            out/arch/arm64/boot/Image
+            kernelsu_boot.img
+            out/.config
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
