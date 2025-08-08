@@ -234,6 +234,21 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             n200_defconfig
 
+          make O=out \
+            LLVM=1 LLVM_IAS=1 \
+            LD=$CLANG_BIN/ld.lld \
+            AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm \
+            OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip \
+            CC=$CLANG_BIN/clang \
+
+CROSS_COMPILE=aarch64-linux-android- \
+    CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+    ARCH=arm64 \
+    SUBARCH=arm64 \
+    -j$(nproc)
+
       - name: Check Build Output
         run: |
           ls -la out/arch/arm64/boot/
