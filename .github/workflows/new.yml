@@ -72,7 +72,6 @@ jobs:
                 rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
               else
                 echo "Downloaded LLVM file is not a valid XZ archive!"
-                # Try alternative: use system clang as last resort
                 echo "Using system clang as last resort..."
                 mkdir -p clang/bin
                 sudo apt-get update
@@ -103,12 +102,7 @@ jobs:
           fi
           
           echo "Setting executable permissions..."
-          chmod +x clang/bin/* || true  # Don't fail if some files can't be made executable
-
-      - name: Verify Clang Installation
-        run: |
-          ls -la toolchain/linux-x86/clang/bin/
-          toolchain/linux-x86/clang/bin/clang --version
+          chmod +x clang/bin/* 2>/dev/null || true
 
       - name: Set up Environment
         run: |
@@ -146,8 +140,6 @@ jobs:
           CONFIG_PROC_FS=y
           CONFIG_TMPFS=y
           EOF
-
-# Add this step RIGHT BEFORE your "Build Kernel" step
 
       - name: Fix Missing LLVM Tools
         run: |
@@ -197,28 +189,19 @@ jobs:
         run: |
           echo "Fixing missing symbol dependencies..."
           
-          # Add missing Qualcomm SMEM configuration
+          # Try to add missing Qualcomm SMEM configuration
           cat << 'EOF' >> arch/arm64/configs/n200_defconfig
-          # Qualcomm SMEM support (fixes qcom_smem_get)
+          # Fix missing symbols
           CONFIG_QCOM_SMEM=y
-          CONFIG_QCOM_SMEM_PART=y
-          
-          # OPlus project support (fixes get_project)
-          CONFIG_OPLUS_SYSTEM_KERNEL_QCOM=y
-          CONFIG_OPLUS_FEATURE_PROJECTINFO=y
-          
-          # Alternative: disable problematic sensor driver if not needed
-          # CONFIG_OPLUS_SENSOR_DEVINFO=n
+          # Disable problematic sensor driver as fallback
+          # CONFIG_OPLUS_SENSOR_DEVINFO is not set
           EOF
           
           echo "Updated defconfig with missing dependencies"
 
-      - name: Clean and Rebuild Configuration
+      - name: Build Kernel
         run: |
-          # Clean the previous configuration
-          make O=out clean
-          
-          # Rebuild with updated config
+          echo "Building kernel configuration..."
           make O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -233,72 +216,96 @@ jobs:
             CROSS_COMPILE=aarch64-linux-android- \
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             n200_defconfig
-
+          
+          echo "Building kernel image..."
           make O=out \
+            ARCH=arm64 \
+            SUBARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
+            CC=$CLANG_BIN/clang \
             LD=$CLANG_BIN/ld.lld \
             AR=$CLANG_BIN/llvm-ar \
             NM=$CLANG_BIN/llvm-nm \
             OBJDUMP=$CLANG_BIN/llvm-objdump \
             STRIP=$CLANG_BIN/llvm-strip \
-            CC=$CLANG_BIN/clang \
-
-CROSS_COMPILE=aarch64-linux-android- \
-    CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-    ARCH=arm64 \
-    SUBARCH=arm64 \
-    -j$(nproc)
+            OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            -j$(nproc)
 
       - name: Check Build Output
         run: |
           ls -la out/arch/arm64/boot/
           if [ -f out/arch/arm64/boot/Image ]; then
-            echo "Kernel build successful!"
+            echo "✅ Kernel build successful!"
             echo "Image size: $(stat -c%s out/arch/arm64/boot/Image) bytes"
           else
-            echo "Kernel build failed - Image not found"
+            echo "❌ Kernel build failed - Image not found"
             exit 1
           fi
 
       - name: Download Stock Boot Image
         run: |
+          echo "Downloading stock boot image..."
           wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
           ls -la stock_boot.img
 
       - name: Install AIK (Android Image Kitchen)
         run: |
+          echo "Installing Android Image Kitchen..."
           wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
-          unzip master.zip
+          unzip -q master.zip
           mv AIK-Linux-master AIK
           chmod +x AIK/*.sh
 
-      - name: Unpack Stock Boot Image
+      - name: Unpack and Repack Boot Image
         run: |
+          echo "Unpacking stock boot image..."
           cd AIK
           ./unpackimg.sh ../stock_boot.img
-          ls -la split_img/
-
-      - name: Replace Kernel in Boot Image
-        run: |
-          cp out/arch/arm64/boot/Image AIK/split_img/stock_boot.img-kernel
-          echo "Kernel replaced successfully"
-
-      - name: Repack Boot Image
-        run: |
-          cd AIK
+          
+          echo "Replacing kernel..."
+          cp ../out/arch/arm64/boot/Image split_img/stock_boot.img-kernel
+          
+          echo "Repacking boot image..."
           ./repackimg.sh
-          ls -la image-new.img
+          
+          echo "Moving final image..."
           mv image-new.img ../kernelsu_boot.img
+          
+          echo "✅ Boot image repacked successfully!"
+          ls -la ../kernelsu_boot.img
 
-      - name: Upload Artifacts
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: kernelsu-kernel-${{ inputs.kernelsu_version }}
+          name: kernelsu-build-${{ inputs.kernelsu_version }}-${{ github.run_number }}
           path: |
             out/arch/arm64/boot/Image
             kernelsu_boot.img
             out/.config
           retention-days: 30
+
+      - name: Create Release Summary
+        run: |
+          echo "## 🎉 Build Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+          echo "- **KernelSU Version:** ${{ inputs.kernelsu_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Image Size:** $(stat -c%s out/arch/arm64/boot/Image) bytes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Boot Image Size:** $(stat -c%s kernelsu_boot.img) bytes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Artifacts Generated" >> $GITHUB_STEP_SUMMARY
+          echo "- \`Image\` - Raw kernel image" >> $GITHUB_STEP_SUMMARY
+          echo "- \`kernelsu_boot.img\` - Ready-to-flash boot image" >> $GITHUB_STEP_SUMMARY
+          echo "- \`.config\` - Kernel configuration used" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Installation" >> $GITHUB_STEP_SUMMARY
+          echo "Flash \`kernelsu_boot.img\` to your boot partition:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "fastboot flash boot kernelsu_boot.img" >> $GITHUB_STEP_SUMMARY
+          echo "fastboot reboot" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Create Release (Optional)
         if: github.ref == 'refs/heads/main'
