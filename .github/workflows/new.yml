@@ -151,7 +151,7 @@ jobs:
 
       - name: Fix Missing LLVM Tools
         run: |
-          # Install system LLVM tools as fallback
+          # Install system LLVM tools as fallback  
           sudo apt-get update
           sudo apt-get install -y llvm-18-tools
           
@@ -179,9 +179,6 @@ jobs:
             ln -sf /usr/bin/llvm-size-18 llvm-size
           fi
           
-          # Make sure all tools are executable
-          chmod +x *
-          
           # Test the problematic tool
           echo "Testing llvm-objcopy..."
           ./llvm-objcopy --version || echo "llvm-objcopy test failed"
@@ -195,8 +192,6 @@ jobs:
           CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
           echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
           echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV
-          echo "ADDR2LINE=$CLANG_BIN/llvm-addr2line" >> $GITHUB_ENV
-          echo "SIZE=$CLANG_BIN/llvm-size" >> $GITHUB_ENV
 
       - name: Build Kernel
         run: |
