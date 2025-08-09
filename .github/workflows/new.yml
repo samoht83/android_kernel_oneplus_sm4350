@@ -42,41 +42,31 @@ jobs:
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
           
-          # Primary URL
           PRIMARY_URL="https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz"
-          # Fallback URL - using ubuntu-22.04 for GitHub Actions runners
           FALLBACK_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
           
-          echo "Attempting to download from primary URL..."
+          echo "Attempting primary Clang download..."
           if wget --spider "$PRIMARY_URL" 2>/dev/null; then
-            echo "Primary URL is available. Downloading..."
             wget "$PRIMARY_URL"
             if file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
               tar -xzf clang-r510928.tar.gz
               mv clang-r510928 clang
               rm clang-r510928.tar.gz
             else
-              echo "Downloaded file is not a valid gzip archive!"
+              echo "Invalid gzip archive!"
               exit 1
             fi
           else
-            echo "Primary URL failed. Using official LLVM release as fallback..."
-            
-            # Download the fallback file
+            echo "Primary URL failed — trying LLVM fallback..."
             if wget "$FALLBACK_URL"; then
-              # Verify it's an xz file
               if file clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz | grep -q 'XZ compressed data'; then
-                echo "Extracting LLVM toolchain..."
                 tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
                 mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang
                 rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
               else
-                echo "Downloaded LLVM file is not a valid XZ archive!"
-                echo "Using system clang as last resort..."
+                echo "Invalid XZ archive — using system Clang."
                 mkdir -p clang/bin
-                sudo apt-get update
                 sudo apt-get install -y clang-18 lld-18
-                # Create symlinks to make it look like a regular toolchain
                 ln -s /usr/bin/clang-18 clang/bin/clang
                 ln -s /usr/bin/clang++-18 clang/bin/clang++
                 ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
@@ -85,23 +75,8 @@ jobs:
                 ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
                 ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
               fi
-            else
-              echo "Fallback download also failed. Using system clang..."
-              mkdir -p clang/bin
-              sudo apt-get update
-              sudo apt-get install -y clang-18 lld-18
-              # Create symlinks
-              ln -s /usr/bin/clang-18 clang/bin/clang
-              ln -s /usr/bin/clang++-18 clang/bin/clang++
-              ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
-              ln -s /usr/bin/llvm-ar-18 clang/bin/llvm-ar
-              ln -s /usr/bin/llvm-nm-18 clang/bin/llvm-nm
-              ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
-              ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
             fi
           fi
-          
-          echo "Setting executable permissions..."
           chmod +x clang/bin/* 2>/dev/null || true
 
       - name: Set up Environment
@@ -119,6 +94,11 @@ jobs:
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
 
+      - name: Debug Clang toolchain files
+        run: |
+          echo "Listing clang/bin contents:"
+          ls -la "$CLANG_BIN" || true
+
       - name: Set up GCC Cross-Compiler
         run: |
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc
@@ -127,7 +107,6 @@ jobs:
       - name: Clone and Set Up KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.kernelsu_version }}
-          echo 'Appending KernelSU config to defconfig...'
           tee -a arch/arm64/configs/n200_defconfig > /dev/null <<EOF
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
@@ -141,149 +120,25 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Fix Missing LLVM Tools
-        run: |
-          # Install system LLVM tools as fallback  
-          sudo apt-get update
-          sudo apt-get install -y llvm-18-tools
-          
-          # Create missing symlinks in your clang directory
-          cd toolchain/linux-x86/clang/bin
-          
-          # Check and create missing tools
-          if [ ! -f llvm-objcopy ]; then
-            echo "Creating llvm-objcopy symlink..."
-            ln -sf /usr/bin/llvm-objcopy-18 llvm-objcopy
-          fi
-          
-          if [ ! -f llvm-readelf ]; then
-            echo "Creating llvm-readelf symlink..."
-            ln -sf /usr/bin/llvm-readelf-18 llvm-readelf
-          fi
-          
-          if [ ! -f llvm-addr2line ]; then
-            echo "Creating llvm-addr2line symlink..."
-            ln -sf /usr/bin/llvm-addr2line-18 llvm-addr2line
-          fi
-          
-          if [ ! -f llvm-size ]; then
-            echo "Creating llvm-size symlink..."
-            ln -sf /usr/bin/llvm-size-18 llvm-size
-          fi
-          
-          # Test the problematic tool
-          echo "Testing llvm-objcopy..."
-          ./llvm-objcopy --version || echo "llvm-objcopy test failed"
-          
-          # List all tools
-          echo "Available tools:"
-          ls -la llvm-*
-
-      - name: Update Environment Variables
-        run: |
-          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
-          echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
-          echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV
-
-      - name: Debug Build System
-        run: |
-          echo "=== Checking defconfig ==="
-          grep -i sensor arch/arm64/configs/n200_defconfig || echo "No sensor configs found"
-          
-          echo "=== Searching for sensor driver files ==="
-          find . -name "*sensor*" -type f | grep -E '\.(c|h)$' | head -10 || echo "No sensor files found"
-          
-          echo "=== Checking if oplus_sensor_devinfo is being built ==="
-          find . -name "Makefile*" -exec grep -H "oplus_sensor_devinfo" {} \; 2>/dev/null || echo "Not found in Makefiles"
-
       - name: Fix missing sensor_proc_dir symbol (safe)
         run: |
           set -euo pipefail
-          echo "Searching for sensor_proc_dir definition..."
-          # search for definition (without 'extern')
-          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\+proc_dir_entry[[:space:]]\+\\*sensor_proc_dir" -n soc || true)
-          if [ -n "$DEF_FILE" ]; then
-            echo "Found defining file(s):"
-            echo "$DEF_FILE"
-            # extract the path (first match)
-            DEF_PATH=$(echo "$DEF_FILE" | head -n1 | cut -d: -f1)
-            echo "Definition path: $DEF_PATH"
-            # Try to find its Makefile entry to discover the CONFIG guard
-            SRC_BASENAME=$(basename "$DEF_PATH")
-            MAKEFILE_WITH_ENTRY=$(grep -R --line-number --no-messages ".*${SRC_BASENAME}.*" -n | grep -E "Makefile$" || true)
-            if [ -n "$MAKEFILE_WITH_ENTRY" ]; then
-              echo "Found Makefile(s) referencing the source:"
-              echo "$MAKEFILE_WITH_ENTRY"
-              # try to extract a CONFIG variable present in the same Makefile
-              # (heuristic: look for obj-$(CONFIG_...) patterns)
-              CAND_CONFIG=$(grep -h "obj-\\$(CONFIG_" soc -R 2>/dev/null | sed -n 's/.*obj-\$(CONFIG_\([A-Z0-9_]*\)).*/\1/p' | sort -u | head -n1 || true)
-              if [ -n "$CAND_CONFIG" ]; then
-                echo "Heuristic found CONFIG: $CAND_CONFIG — enabling in defconfig"
-                echo "CONFIG_${CAND_CONFIG}=y" >> arch/arm64/configs/n200_defconfig
-              else
-                # Common Oplus sensor config fallback
-                echo "No clear CONFIG found via heuristic — enabling common Oplus sensor configs"
-                echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
-                echo "CONFIG_OPLUS_SENSOR_COMMON=y" >> arch/arm64/configs/n200_defconfig
-              fi
-            else
-              echo "No Makefile entry found for $SRC_BASENAME; enabling common Oplus sensor configs"
-              echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
-              echo "CONFIG_OPLUS_SENSOR_COMMON=y" >> arch/arm64/configs/n200_defconfig
-            fi
-          else
-            echo "No definition found in repo — creating a small stub to satisfy the symbol at link time."
-            # Create drivers/misc if not exists
+          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\\+proc_dir_entry[[:space:]]\\+\\*sensor_proc_dir" -n soc || true)
+          if [ -z "$DEF_FILE" ]; then
             mkdir -p drivers/misc
             cat > drivers/misc/sensor_proc_stub.c <<'EOF'
 #include <linux/proc_fs.h>
 struct proc_dir_entry *sensor_proc_dir;
 EXPORT_SYMBOL(sensor_proc_dir);
 EOF
-            # Add to drivers/misc/Makefile if not already present
-            MF=drivers/misc/Makefile
-            if ! grep -q "sensor_proc_stub.o" $MF 2>/dev/null; then
-              # Prefer to append to obj-y or obj-m depending on file (we'll add to obj-y)
-              echo "" >> $MF
-              echo "# Added by CI: provide stub for sensor_proc_dir" >> $MF
-              echo "obj-y += sensor_proc_stub.o" >> $MF
-            fi
-            # also add a comment to the defconfig so it's clear
-            echo "# CI-added: sensor_proc_stub to satisfy missing symbol" >> arch/arm64/configs/n200_defconfig
+            echo "obj-y += sensor_proc_stub.o" >> drivers/misc/Makefile
+          else
+            echo "Found real definition — enabling CONFIG_OPLUS_SENSOR_DEVINFO"
+            echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
           fi
-
-          # show what's been appended
-          echo "---- defconfig tail ----"
-          tail -n +1 arch/arm64/configs/n200_defconfig | tail -n 40 || true
-          echo "---- done ----"
-
-          # Re-generate/outdated config (safe)
-          make O=out n200_defconfig || true
-          echo "Sensor symbol fix applied. Proceeding to next steps."
-
-      - name: Fix Kernel Configuration
-        run: |
-          echo "Fixing missing symbol dependencies..."
-          
-          # Clean the config first
-          make O=out mrproper 2>/dev/null || true
-          
-          # Add missing Qualcomm SMEM configuration and disable problematic drivers
-          cat << 'EOF' >> arch/arm64/configs/n200_defconfig
-          # Fix missing symbols
-          CONFIG_QCOM_SMEM=y
-          # Explicitly disable problematic drivers
-          # CONFIG_OPLUS_SENSOR_DEVINFO is not set
-          # CONFIG_OPLUS_SENSOR is not set
-          # CONFIG_OPLUS_FEATURE_SENSOR_DRIVER is not set
-          # CONFIG_OPLUS_FEATURE_SENSOR_SMEM is not set
-          EOF
-          
-          echo "Updated defconfig with missing dependencies"
 
       - name: Build Kernel
         run: |
-          echo "Building kernel configuration..."
           make O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -299,7 +154,6 @@ EOF
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             n200_defconfig
           
-          echo "Building kernel image..."
           make O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
@@ -315,26 +169,12 @@ EOF
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             -j$(nproc)
 
-      - name: Check Build Output
-        run: |
-          ls -la out/arch/arm64/boot/
-          if [ -f out/arch/arm64/boot/Image ]; then
-            echo "✅ Kernel build successful!"
-            echo "Image size: $(stat -c%s out/arch/arm64/boot/Image) bytes"
-          else
-            echo "❌ Kernel build failed - Image not found"
-            exit 1
-          fi
-
       - name: Download Stock Boot Image
         run: |
-          echo "Downloading stock boot image..."
           wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
-          ls -la stock_boot.img
 
       - name: Install AIK (Android Image Kitchen)
         run: |
-          echo "Installing Android Image Kitchen..."
           wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
           unzip -q master.zip
           mv AIK-Linux-master AIK
@@ -342,21 +182,11 @@ EOF
 
       - name: Unpack and Repack Boot Image
         run: |
-          echo "Unpacking stock boot image..."
           cd AIK
           ./unpackimg.sh ../stock_boot.img
-          
-          echo "Replacing kernel..."
           cp ../out/arch/arm64/boot/Image split_img/stock_boot.img-kernel
-          
-          echo "Repacking boot image..."
           ./repackimg.sh
-          
-          echo "Moving final image..."
           mv image-new.img ../kernelsu_boot.img
-          
-          echo "✅ Boot image repacked successfully!"
-          ls -la ../kernelsu_boot.img
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -365,56 +195,6 @@ EOF
           path: |
             out/arch/arm64/boot/Image
             kernelsu_boot.img
+            arch/arm64/configs/n200_defconfig
             out/.config
           retention-days: 30
-
-      - name: Create Release Summary
-        run: |
-          echo "## 🎉 Build Complete!" >> $GITHUB_STEP_SUMMARY
-          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
-          echo "- **KernelSU Version:** ${{ inputs.kernelsu_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build Date:** $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Kernel Image Size:** $(stat -c%s out/arch/arm64/boot/Image) bytes" >> $GITHUB_STEP_SUMMARY
-          echo "- **Boot Image Size:** $(stat -c%s kernelsu_boot.img) bytes" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Artifacts Generated" >> $GITHUB_STEP_SUMMARY
-          echo "- \`Image\` - Raw kernel image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`kernelsu_boot.img\` - Ready-to-flash boot image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`.config\` - Kernel configuration used" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🚀 Installation" >> $GITHUB_STEP_SUMMARY
-          echo "Flash \`kernelsu_boot.img\` to your boot partition:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "fastboot flash boot kernelsu_boot.img" >> $GITHUB_STEP_SUMMARY
-          echo "fastboot reboot" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-
-      - name: Create Release (Optional)
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: kernelsu-${{ inputs.kernelsu_version }}-${{ github.run_number }}
-          name: KernelSU Build ${{ inputs.kernelsu_version }}
-          body: |
-            ## KernelSU Kernel Build
-            
-            **KernelSU Version:** ${{ inputs.kernelsu_version }}
-            **Build Date:** ${{ github.event.head_commit.timestamp }}
-            **Commit:** ${{ github.sha }}
-            
-            ### Files:
-            - `Image`: Raw kernel image
-            - `kernelsu_boot.img`: Repacked boot image ready to flash
-            - `.config`: Kernel configuration used
-            
-            ### Installation:
-            Flash `kernelsu_boot.img` to your boot partition using fastboot or recovery.
-            
-          files: |
-            out/arch/arm64/boot/Image
-            kernelsu_boot.img
-            out/.config
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
