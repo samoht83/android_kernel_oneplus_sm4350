@@ -166,36 +166,47 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Fix missing sensor_proc_dir symbol (safe)
+      - name: Fix Missing Dependencies for OPlus Sensor Driver
         run: |
           set -euo pipefail
-          # Try to find a real non-extern definition
-          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\\+proc_dir_entry[[:space:]]\\+\\*sensor_proc_dir" soc || true)
-          if [ -z "$DEF_FILE" ]; then
-            echo "No concrete definition found — adding a small stub (non-destructive)."
-            mkdir -p drivers/misc
-            cat > drivers/misc/sensor_proc_stub.c <<'EOF'
-          #include <linux/proc_fs.h>
-          struct proc_dir_entry *sensor_proc_dir;
-          EXPORT_SYMBOL(sensor_proc_dir);
+          
+          echo "Adding required dependencies for OPlus sensor driver..."
+          
+          # Add missing Qualcomm SMEM configuration
+          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
+          
+          # Required dependencies for OPlus sensor drivers
+          CONFIG_QCOM_SMEM=y
+          CONFIG_QCOM_SMD_RPM=y
+          CONFIG_QCOM_SMEM_STATE=y
+          
+          # Try to enable OPlus project info if available
+          CONFIG_OPLUS_SYSTEM_KERNEL_QCOM=y
+          CONFIG_OPLUS_FEATURE_PROJECTINFO=y
           EOF
-            # Ensure Makefile exists and add a line if not present
-            MF=drivers/misc/Makefile
-            if [ ! -f "$MF" ]; then
-              echo -e "obj-y :=\n" > "$MF"
+          
+          # Create a stub for get_project function if it doesn't exist
+          if ! grep -r "int get_project" . --include="*.c" --include="*.h" >/dev/null 2>&1; then
+            echo "Creating get_project stub..."
+            mkdir -p drivers/misc
+            cat > drivers/misc/oplus_project_stub.c <<'EOF'
+          #include <linux/module.h>
+          
+          int get_project(void)
+          {
+              // Return a default project ID for OnePlus SM4350 devices
+              return 21000; // Generic OnePlus project ID
+          }
+          EXPORT_SYMBOL(get_project);
+          EOF
+            
+            # Add to Makefile
+            if ! grep -q "oplus_project_stub.o" drivers/misc/Makefile 2>/dev/null; then
+              echo "obj-y += oplus_project_stub.o" >> drivers/misc/Makefile
             fi
-            if ! grep -q "sensor_proc_stub.o" "$MF"; then
-              echo "" >> "$MF"
-              echo "# Added by CI: provide stub for sensor_proc_dir" >> "$MF"
-              echo "obj-y += sensor_proc_stub.o" >> "$MF"
-            fi
-            echo "# CI-added: sensor_proc_stub to satisfy missing symbol" >> arch/arm64/configs/n200_defconfig
-          else
-            echo "Found real definition(s):"
-            echo "$DEF_FILE"
-            echo "Enabling CONFIG_OPLUS_SENSOR_DEVINFO in defconfig."
-            echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
           fi
+          
+          echo "Dependencies added for OPlus sensor driver"
 
       - name: Build Kernel
         run: |
