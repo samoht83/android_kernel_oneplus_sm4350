@@ -6423,6 +6423,7 @@ CONFIG_SBITMAP=y
 
 #
 # Kernel hacking
+CONFIG_RMNET=y
 #
 
 #
