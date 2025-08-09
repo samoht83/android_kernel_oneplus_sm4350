@@ -196,36 +196,70 @@ jobs:
           echo "=== Checking if oplus_sensor_devinfo is being built ==="
           find . -name "Makefile*" -exec grep -H "oplus_sensor_devinfo" {} \; 2>/dev/null || echo "Not found in Makefiles"
 
-      - name: Remove Problematic Object from Build
+      - name: Fix missing sensor_proc_dir symbol (safe)
         run: |
-          echo "Searching for and removing oplus_sensor_devinfo from build..."
-          
-          # Find all Makefiles that might build this driver
-          echo "Searching for Makefiles containing oplus_sensor_devinfo..."
-          find . -name "Makefile*" -type f | xargs grep -l "oplus_sensor_devinfo" 2>/dev/null || true
-          
-          # Comment out the driver in Makefiles
-          echo "Commenting out driver in Makefiles..."
-          find . -name "Makefile*" -type f -exec sed -i 's/.*oplus_sensor_devinfo.*/#&/' {} \; 2>/dev/null || true
-          
-          # Also try to find it in the soc/oplus directory specifically
-          if [ -d "soc/oplus" ]; then
-            echo "Found soc/oplus directory, searching for Makefiles..."
-            find soc/oplus -name "Makefile*" -type f | xargs cat 2>/dev/null || true
-            find soc/oplus -name "Makefile*" -type f -exec sed -i 's/.*sensor.*/#&/' {} \; 2>/dev/null || true
+          set -euo pipefail
+          echo "Searching for sensor_proc_dir definition..."
+          # search for definition (without 'extern')
+          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\+proc_dir_entry[[:space:]]\+\\*sensor_proc_dir" -n soc || true)
+          if [ -n "$DEF_FILE" ]; then
+            echo "Found defining file(s):"
+            echo "$DEF_FILE"
+            # extract the path (first match)
+            DEF_PATH=$(echo "$DEF_FILE" | head -n1 | cut -d: -f1)
+            echo "Definition path: $DEF_PATH"
+            # Try to find its Makefile entry to discover the CONFIG guard
+            SRC_BASENAME=$(basename "$DEF_PATH")
+            MAKEFILE_WITH_ENTRY=$(grep -R --line-number --no-messages ".*${SRC_BASENAME}.*" -n | grep -E "Makefile$" || true)
+            if [ -n "$MAKEFILE_WITH_ENTRY" ]; then
+              echo "Found Makefile(s) referencing the source:"
+              echo "$MAKEFILE_WITH_ENTRY"
+              # try to extract a CONFIG variable present in the same Makefile
+              # (heuristic: look for obj-$(CONFIG_...) patterns)
+              CAND_CONFIG=$(grep -h "obj-\\$(CONFIG_" soc -R 2>/dev/null | sed -n 's/.*obj-\$(CONFIG_\([A-Z0-9_]*\)).*/\1/p' | sort -u | head -n1 || true)
+              if [ -n "$CAND_CONFIG" ]; then
+                echo "Heuristic found CONFIG: $CAND_CONFIG — enabling in defconfig"
+                echo "CONFIG_${CAND_CONFIG}=y" >> arch/arm64/configs/n200_defconfig
+              else
+                # Common Oplus sensor config fallback
+                echo "No clear CONFIG found via heuristic — enabling common Oplus sensor configs"
+                echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
+                echo "CONFIG_OPLUS_SENSOR_COMMON=y" >> arch/arm64/configs/n200_defconfig
+              fi
+            else
+              echo "No Makefile entry found for $SRC_BASENAME; enabling common Oplus sensor configs"
+              echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
+              echo "CONFIG_OPLUS_SENSOR_COMMON=y" >> arch/arm64/configs/n200_defconfig
+            fi
+          else
+            echo "No definition found in repo — creating a small stub to satisfy the symbol at link time."
+            # Create drivers/misc if not exists
+            mkdir -p drivers/misc
+            cat > drivers/misc/sensor_proc_stub.c <<'EOF'
+#include <linux/proc_fs.h>
+struct proc_dir_entry *sensor_proc_dir;
+EXPORT_SYMBOL(sensor_proc_dir);
+EOF
+            # Add to drivers/misc/Makefile if not already present
+            MF=drivers/misc/Makefile
+            if ! grep -q "sensor_proc_stub.o" $MF 2>/dev/null; then
+              # Prefer to append to obj-y or obj-m depending on file (we'll add to obj-y)
+              echo "" >> $MF
+              echo "# Added by CI: provide stub for sensor_proc_dir" >> $MF
+              echo "obj-y += sensor_proc_stub.o" >> $MF
+            fi
+            # also add a comment to the defconfig so it's clear
+            echo "# CI-added: sensor_proc_stub to satisfy missing symbol" >> arch/arm64/configs/n200_defconfig
           fi
-          
-          # Rename the source file to prevent it from being found
-          if [ -f "soc/oplus/sensor/oplus_sensor_devinfo.c" ]; then
-            echo "Renaming problematic source file..."
-            mv soc/oplus/sensor/oplus_sensor_devinfo.c soc/oplus/sensor/oplus_sensor_devinfo.c.disabled
-          fi
-          
-          # Remove any sensor devinfo related files
-          find . -name "*sensor_devinfo*" -type f -exec echo "Found: {}" \;
-          find . -name "*sensor_devinfo*" -type f -exec rm -f {} \; 2>/dev/null || true
-          
-          echo "Removed oplus_sensor_devinfo from build system"
+
+          # show what's been appended
+          echo "---- defconfig tail ----"
+          tail -n +1 arch/arm64/configs/n200_defconfig | tail -n 40 || true
+          echo "---- done ----"
+
+          # Re-generate/outdated config (safe)
+          make O=out n200_defconfig || true
+          echo "Sensor symbol fix applied. Proceeding to next steps."
 
       - name: Fix Kernel Configuration
         run: |
