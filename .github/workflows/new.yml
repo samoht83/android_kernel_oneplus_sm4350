@@ -203,6 +203,35 @@ jobs:
           
           echo "Stubs created for missing OPlus functions"
 
+      - name: Disable Problematic Datarmnet Modules
+        run: |
+          set -euo pipefail
+          
+          echo "Disabling problematic datarmnet modules with missing symbols..."
+          
+          # Add configs to disable datarmnet modules
+          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
+          
+          # Disable problematic datarmnet modules
+          # CONFIG_RMNET is not set
+          # CONFIG_RMNET_CTL is not set 
+          # CONFIG_RMNET_CORE is not set
+          # CONFIG_RMNET_OFFLOAD is not set
+          EOF
+          
+          # Also disable in techpack Makefiles to prevent building
+          if [ -d "techpack/datarmnet" ]; then
+            find techpack/datarmnet -name "Makefile*" -exec sed -i 's/^obj-/#obj-/' {} \; 2>/dev/null || true
+            echo "Disabled datarmnet techpack modules"
+          fi
+          
+          # Alternative: completely remove from techpack build
+          if [ -f "techpack/Makefile" ]; then
+            sed -i 's/.*datarmnet.*/#&/' techpack/Makefile 2>/dev/null || true
+          fi
+          
+          echo "Datarmnet modules disabled"
+
       - name: Build Kernel
         run: |
           set -euo pipefail
