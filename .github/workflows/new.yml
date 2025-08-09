@@ -141,11 +141,19 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Disable Problematic Drivers (Fallback)
+      - name: Fix Kernel Configuration
         run: |
-    echo "# Disable drivers with missing dependencies" >> arch/arm64/configs/n200_defconfig
-    echo "# CONFIG_OPLUS_SENSOR_DEVINFO is not set" >> arch/arm64/configs/n200_defconfig
-    echo "# CONFIG_OPLUS_SENSOR is not set" >> arch/arm64/configs/n200_defconfig
+          echo "Fixing missing symbol dependencies..."
+          
+          cat << 'EOF' >> arch/arm64/configs/n200_defconfig
+          # Fix missing symbols
+          CONFIG_QCOM_SMEM=y
+          # Disable problematic sensor drivers
+          # CONFIG_OPLUS_SENSOR_DEVINFO is not set
+          # CONFIG_OPLUS_SENSOR is not set
+          EOF
+          
+          echo "Updated defconfig with missing dependencies"
 
       - name: Fix Missing LLVM Tools
         run: |
