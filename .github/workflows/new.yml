@@ -166,47 +166,42 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Fix Missing Dependencies for OPlus Sensor Driver
+      - name: Create Stubs for Missing OPlus Functions
         run: |
           set -euo pipefail
           
-          echo "Adding required dependencies for OPlus sensor driver..."
+          echo "Creating stubs for missing OPlus sensor functions..."
           
-          # Add missing Qualcomm SMEM configuration
-          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
-          
-          # Required dependencies for OPlus sensor drivers
-          CONFIG_QCOM_SMEM=y
-          CONFIG_QCOM_SMD_RPM=y
-          CONFIG_QCOM_SMEM_STATE=y
-          
-          # Try to enable OPlus project info if available
-          CONFIG_OPLUS_SYSTEM_KERNEL_QCOM=y
-          CONFIG_OPLUS_FEATURE_PROJECTINFO=y
-          EOF
-          
-          # Create a stub for get_project function if it doesn't exist
-          if ! grep -r "int get_project" . --include="*.c" --include="*.h" >/dev/null 2>&1; then
-            echo "Creating get_project stub..."
-            mkdir -p drivers/misc
-            cat > drivers/misc/oplus_project_stub.c <<'EOF'
+          mkdir -p drivers/misc
+          cat > drivers/misc/oplus_stubs.c <<'EOF'
           #include <linux/module.h>
+          #include <linux/kernel.h>
+          #include <linux/errno.h>
           
+          // Stub for qcom_smem_get function
+          void *qcom_smem_get(unsigned host, unsigned item, size_t *size)
+          {
+              if (size)
+                  *size = 0;
+              return ERR_PTR(-ENOENT);
+          }
+          EXPORT_SYMBOL(qcom_smem_get);
+          
+          // Stub for get_project function
           int get_project(void)
           {
-              // Return a default project ID for OnePlus SM4350 devices
-              return 21000; // Generic OnePlus project ID
+              // Return a generic OnePlus project ID
+              return 21000;
           }
           EXPORT_SYMBOL(get_project);
           EOF
-            
-            # Add to Makefile
-            if ! grep -q "oplus_project_stub.o" drivers/misc/Makefile 2>/dev/null; then
-              echo "obj-y += oplus_project_stub.o" >> drivers/misc/Makefile
-            fi
+          
+          # Add to Makefile if not already present
+          if ! grep -q "oplus_stubs.o" drivers/misc/Makefile 2>/dev/null; then
+            echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
           fi
           
-          echo "Dependencies added for OPlus sensor driver"
+          echo "Stubs created for missing OPlus functions"
 
       - name: Build Kernel
         run: |
