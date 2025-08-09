@@ -44,11 +44,11 @@ jobs:
           mkdir -p toolchain/linux-x86
           CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
           wget -q "$CLANG_URL" -O clang.tar.xz
-          TOP_DIR="$(tar -tf clang.tar.xz | head -1 | cut -f1 -d"/")"
+          TOP_DIR="$(tar -tf clang.tar.xz | head -1 | cut -f1 -d'/')"
           tar -xf clang.tar.xz
           mv "$TOP_DIR" toolchain/linux-x86/clang
           rm clang.tar.xz
-          
+
       - name: Set up Environment Variables
         shell: bash
         run: |
@@ -74,12 +74,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
           # Integrate KernelSU
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
 
           # Append required configs to defconfig
-          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
+          cat >> arch/arm64/configs/n200_defconfig << 'EOF'
 # KernelSU Requirements
 CONFIG_KPROBES=y
 CONFIG_HAVE_KPROBES=y
@@ -89,10 +89,10 @@ CONFIG_KERNELSU=y
 # Patches for build errors
 # CONFIG_RMNET is not set
 EOF
-          
+
           # Create stubs for missing symbols to prevent linker errors
           mkdir -p drivers/misc
-          cat > drivers/misc/oplus_stubs.c <<'EOC'
+          cat > drivers/misc/oplus_stubs.c << 'EOC'
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -106,11 +106,11 @@ EXPORT_SYMBOL(qcom_smem_get);
 
 int get_project(void) {
     pr_warn("STUB: get_project called, returning default\n");
-    return 21000; 
+    return 21000;
 }
 EXPORT_SYMBOL(get_project);
 EOC
-          
+
           # Add the stub object to the build
           echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
 
