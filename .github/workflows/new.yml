@@ -17,7 +17,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -130,7 +129,7 @@ jobs:
             if [ -n "$STUBS" ]; then
               echo "Found stubs: $STUBS"
               for STUB in $STUBS; do
-                echo "Removing $STUB..."
+                echo "Removing $STUB from $STUB_MF..."
                 sed -i "\|$STUB|d" "$STUB_MF"
               done
             else
