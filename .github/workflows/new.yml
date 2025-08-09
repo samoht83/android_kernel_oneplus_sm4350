@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file
 
       - name: Cache Clang Toolchain
         id: cache-clang
@@ -36,48 +36,85 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-clang-18-
 
-      - name: Download and Extract Clang Toolchain
+      - name: Download and Extract Clang Toolchain (with fallback)
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
+          set -euo pipefail
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
-          
+
           PRIMARY_URL="https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz"
           FALLBACK_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-          
-          echo "Attempting primary Clang download..."
-          if wget --spider "$PRIMARY_URL" 2>/dev/null; then
-            wget "$PRIMARY_URL"
+
+          echo "Trying primary URL..."
+          if wget --spider --quiet "$PRIMARY_URL" 2>/dev/null; then
+            echo "Primary URL reachable — downloading..."
+            wget -q "$PRIMARY_URL" -O clang-r510928.tar.gz
             if file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
               tar -xzf clang-r510928.tar.gz
-              mv clang-r510928 clang
+              # some archives extract to clang-r510928, try to normalize to clang/
+              if [ -d clang-r510928 ]; then
+                mv clang-r510928 clang
+              else
+                # if extracted dir name differs, attempt to find top-level dir and rename
+                TOPDIR=$(tar -tzf clang-r510928.tar.gz | head -1 | cut -f1 -d"/")
+                if [ -n "$TOPDIR" ] && [ -d "$TOPDIR" ]; then
+                  mv "$TOPDIR" clang
+                fi
+              fi
               rm clang-r510928.tar.gz
             else
-              echo "Invalid gzip archive!"
-              exit 1
+              echo "Primary archive is not a valid gzip archive — aborting primary attempt."
+              rm -f clang-r510928.tar.gz
+              PRIMARY_OK=0
             fi
           else
-            echo "Primary URL failed — trying LLVM fallback..."
-            if wget "$FALLBACK_URL"; then
-              if file clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz | grep -q 'XZ compressed data'; then
-                tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-                mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang
-                rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
-              else
-                echo "Invalid XZ archive — using system Clang."
-                mkdir -p clang/bin
-                sudo apt-get install -y clang-18 lld-18
-                ln -s /usr/bin/clang-18 clang/bin/clang
-                ln -s /usr/bin/clang++-18 clang/bin/clang++
-                ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
-                ln -s /usr/bin/llvm-ar-18 clang/bin/llvm-ar
-                ln -s /usr/bin/llvm-nm-18 clang/bin/llvm-nm
-                ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
-                ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
+            echo "Primary URL not available."
+          fi
+
+          # If clang/ not created, try fallback
+          if [ ! -d clang ]; then
+            echo "Trying official LLVM release as fallback..."
+            wget -q "$FALLBACK_URL" -O clang-fallback.tar.xz || true
+            if [ -f clang-fallback.tar.xz ] && file clang-fallback.tar.xz | grep -q 'XZ compressed data'; then
+              tar -xf clang-fallback.tar.xz
+              # fallback archive usually expands to a long name; normalize to clang/
+              FALLBACK_TOPDIR=$(tar -tf clang-fallback.tar.xz | head -1 | cut -f1 -d"/")
+              if [ -d "$FALLBACK_TOPDIR" ]; then
+                mv "$FALLBACK_TOPDIR" clang
               fi
+              rm -f clang-fallback.tar.xz
+            else
+              echo "Fallback download failed or not an XZ archive. Using system clang/lld as last resort."
+              mkdir -p clang/bin
+              sudo apt-get update
+              sudo apt-get install -y clang-18 lld-18 llvm-18-tools
+              ln -sf /usr/bin/clang-18 clang/bin/clang
+              ln -sf /usr/bin/clang++-18 clang/bin/clang++
+              # prefer ld.lld-18 if available
+              if [ -x /usr/bin/ld.lld-18 ]; then
+                ln -sf /usr/bin/ld.lld-18 clang/bin/ld.lld
+              elif [ -x /usr/bin/ld.lld ]; then
+                ln -sf /usr/bin/ld.lld clang/bin/ld.lld
+              fi
+              ln -sf /usr/bin/llvm-ar-18 clang/bin/llvm-ar || true
+              ln -sf /usr/bin/llvm-nm-18 clang/bin/llvm-nm || true
+              ln -sf /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump || true
+              ln -sf /usr/bin/llvm-strip-18 clang/bin/llvm-strip || true
             fi
           fi
-          chmod +x clang/bin/* 2>/dev/null || true
+
+          # Ensure executables are present
+          if [ -d clang/bin ]; then
+            chmod +x clang/bin/* 2>/dev/null || true
+          fi
+
+      - name: Debug Clang toolchain files
+        run: |
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
+          echo "CLANG_BIN=$CLANG_BIN"
+          ls -la "$CLANG_BIN" || true
+          echo "Which clang: $(which clang || true)"
 
       - name: Set up Environment
         run: |
@@ -89,15 +126,12 @@ jobs:
           echo "NM=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
           echo "OBJDUMP=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
           echo "STRIP=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
+          echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV || true
+          echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV || true
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
-
-      - name: Debug Clang toolchain files
-        run: |
-          echo "Listing clang/bin contents:"
-          ls -la "$CLANG_BIN" || true
 
       - name: Set up GCC Cross-Compiler
         run: |
@@ -107,7 +141,7 @@ jobs:
       - name: Clone and Set Up KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.kernelsu_version }}
-          tee -a arch/arm64/configs/n200_defconfig > /dev/null <<EOF
+          tee -a arch/arm64/configs/n200_defconfig > /dev/null <<'EOF'
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
@@ -123,70 +157,87 @@ jobs:
       - name: Fix missing sensor_proc_dir symbol (safe)
         run: |
           set -euo pipefail
-          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\\+proc_dir_entry[[:space:]]\\+\\*sensor_proc_dir" -n soc || true)
+          # Try to find a real non-extern definition
+          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\\+proc_dir_entry[[:space:]]\\+\\*sensor_proc_dir" soc || true)
           if [ -z "$DEF_FILE" ]; then
+            echo "No concrete definition found — adding a small stub (non-destructive)."
             mkdir -p drivers/misc
             cat > drivers/misc/sensor_proc_stub.c <<'EOF'
 #include <linux/proc_fs.h>
 struct proc_dir_entry *sensor_proc_dir;
 EXPORT_SYMBOL(sensor_proc_dir);
 EOF
-            echo "obj-y += sensor_proc_stub.o" >> drivers/misc/Makefile
+            # Ensure Makefile exists and add a line if not present
+            MF=drivers/misc/Makefile
+            if [ ! -f "$MF" ]; then
+              echo -e "obj-y :=\n" > "$MF"
+            fi
+            if ! grep -q "sensor_proc_stub.o" "$MF"; then
+              echo "" >> "$MF"
+              echo "# Added by CI: provide stub for sensor_proc_dir" >> "$MF"
+              echo "obj-y += sensor_proc_stub.o" >> "$MF"
+            fi
+            echo "# CI-added: sensor_proc_stub to satisfy missing symbol" >> arch/arm64/configs/n200_defconfig
           else
-            echo "Found real definition — enabling CONFIG_OPLUS_SENSOR_DEVINFO"
+            echo "Found real definition(s):"
+            echo "$DEF_FILE"
+            echo "Enabling CONFIG_OPLUS_SENSOR_DEVINFO in defconfig."
             echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
           fi
 
       - name: Build Kernel
         run: |
+          set -euo pipefail
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
           make O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
-            CC=$CLANG_BIN/clang \
-            LD=$CLANG_BIN/ld.lld \
-            AR=$CLANG_BIN/llvm-ar \
-            NM=$CLANG_BIN/llvm-nm \
-            OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip \
-            OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CC=${CLANG_BIN}/clang \
+            LD=${CLANG_BIN}/ld.lld \
+            AR=${CLANG_BIN}/llvm-ar \
+            NM=${CLANG_BIN}/llvm-nm \
+            OBJDUMP=${CLANG_BIN}/llvm-objdump \
+            STRIP=${CLANG_BIN}/llvm-strip \
+            OBJCOPY=${CLANG_BIN}/llvm-objcopy \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             n200_defconfig
-          
-          make O=out \
+
+          make -j$(nproc) O=out \
             ARCH=arm64 \
             SUBARCH=arm64 \
             LLVM=1 LLVM_IAS=1 \
-            CC=$CLANG_BIN/clang \
-            LD=$CLANG_BIN/ld.lld \
-            AR=$CLANG_BIN/llvm-ar \
-            NM=$CLANG_BIN/llvm-nm \
-            OBJDUMP=$CLANG_BIN/llvm-objdump \
-            STRIP=$CLANG_BIN/llvm-strip \
-            OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CC=${CLANG_BIN}/clang \
+            LD=${CLANG_BIN}/ld.lld \
+            AR=${CLANG_BIN}/llvm-ar \
+            NM=${CLANG_BIN}/llvm-nm \
+            OBJDUMP=${CLANG_BIN}/llvm-objdump \
+            STRIP=${CLANG_BIN}/llvm-strip \
+            OBJCOPY=${CLANG_BIN}/llvm-objcopy \
             CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             -j$(nproc)
 
       - name: Download Stock Boot Image
         run: |
-          wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
+          mkdir -p stock
+          wget -O stock/stock_boot.img "${{ inputs.stock_boot_url }}"
 
-      - name: Install AIK (Android Image Kitchen)
+      - name: Install MagiskBoot (preferred for repack)
         run: |
-          wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
-          unzip -q master.zip
-          mv AIK-Linux-master AIK
-          chmod +x AIK/*.sh
+          curl -LO https://raw.githubusercontent.com/topjohnwu/magisk-files/main/tools/magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
 
-      - name: Unpack and Repack Boot Image
+      - name: Unpack and Repack Boot Image with MagiskBoot
         run: |
-          cd AIK
-          ./unpackimg.sh ../stock_boot.img
-          cp ../out/arch/arm64/boot/Image split_img/stock_boot.img-kernel
-          ./repackimg.sh
-          mv image-new.img ../kernelsu_boot.img
+          mkdir -p extracted
+          cd extracted
+          magiskboot unpack ../stock/stock_boot.img
+          cp ../out/arch/arm64/boot/Image kernel
+          # magiskboot repack will reuse original header/ramdisk params
+          magiskboot repack ../stock/stock_boot.img
+          cp new-boot.img ../kernelsu_boot.img
+          cd ..
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
