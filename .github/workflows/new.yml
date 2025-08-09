@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
 
       - name: Cache Clang Toolchain
         id: cache-clang
@@ -36,97 +36,48 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-clang-18-
 
-      - name: Download and Extract Clang Toolchain (with fallback)
+      - name: Download and Extract Clang Toolchain
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
           mkdir -p toolchain/linux-x86
           cd toolchain/linux-x86
-
+          
           PRIMARY_URL="https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz"
           FALLBACK_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-
-          echo "Trying primary URL..."
-          if wget --spider --quiet "$PRIMARY_URL" 2>/dev/null; then
-            echo "Primary URL reachable — downloading..."
-            wget -q "$PRIMARY_URL" -O clang-r510928.tar.gz
+          
+          echo "Attempting primary Clang download..."
+          if wget --spider "$PRIMARY_URL" 2>/dev/null; then
+            wget "$PRIMARY_URL"
             if file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
               tar -xzf clang-r510928.tar.gz
-              # some archives extract to clang-r510928, try to normalize to clang/
-              if [ -d clang-r510928 ]; then
-                mv clang-r510928 clang
-              else
-                # if extracted dir name differs, attempt to find top-level dir and rename
-                TOPDIR=$(tar -tzf clang-r510928.tar.gz | head -1 | cut -f1 -d"/")
-                if [ -n "$TOPDIR" ] && [ -d "$TOPDIR" ]; then
-                  mv "$TOPDIR" clang
-                fi
-              fi
+              mv clang-r510928 clang
               rm clang-r510928.tar.gz
             else
-              echo "Primary archive is not a valid gzip archive — aborting primary attempt."
-              rm -f clang-r510928.tar.gz
-              PRIMARY_OK=0
+              echo "Invalid gzip archive!"
+              exit 1
             fi
           else
-            echo "Primary URL not available."
-          fi
-
-          # If clang/ not created, try fallback
-          if [ ! -d clang ]; then
-            echo "Trying official LLVM release as fallback..."
-            wget -q "$FALLBACK_URL" -O clang-fallback.tar.xz || true
-            if [ -f clang-fallback.tar.xz ] && file clang-fallback.tar.xz | grep -q 'XZ compressed data'; then
-              tar -xf clang-fallback.tar.xz
-              # fallback archive usually expands to a long name; normalize to clang/
-              FALLBACK_TOPDIR=$(tar -tf clang-fallback.tar.xz | head -1 | cut -f1 -d"/")
-              if [ -d "$FALLBACK_TOPDIR" ]; then
-                mv "$FALLBACK_TOPDIR" clang
+            echo "Primary URL failed — trying LLVM fallback..."
+            if wget "$FALLBACK_URL"; then
+              if file clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz | grep -q 'XZ compressed data'; then
+                tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+                mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang
+                rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+              else
+                echo "Invalid XZ archive — using system Clang."
+                mkdir -p clang/bin
+                sudo apt-get install -y clang-18 lld-18
+                ln -s /usr/bin/clang-18 clang/bin/clang
+                ln -s /usr/bin/clang++-18 clang/bin/clang++
+                ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
+                ln -s /usr/bin/llvm-ar-18 clang/bin/llvm-ar
+                ln -s /usr/bin/llvm-nm-18 clang/bin/llvm-nm
+                ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
+                ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
               fi
-              rm -f clang-fallback.tar.xz
-            else
-              echo "Fallback download failed or not an XZ archive. Using system clang/lld as last resort."
-              mkdir -p clang/bin
-              sudo apt-get update
-              sudo apt-get install -y clang-18 lld-18 llvm-18-tools
-              ln -sf /usr/bin/clang-18 clang/bin/clang
-              ln -sf /usr/bin/clang++-18 clang/bin/clang++
-              # prefer ld.lld-18 if available
-              if [ -x /usr/bin/ld.lld-18 ]; then
-                ln -sf /usr/bin/ld.lld-18 clang/bin/ld.lld
-              elif [ -x /usr/bin/ld.lld ]; then
-                ln -sf /usr/bin/ld.lld clang/bin/ld.lld
-              fi
-              ln -sf /usr/bin/llvm-ar-18 clang/bin/llvm-ar || true
-              ln -sf /usr/bin/llvm-nm-18 clang/bin/llvm-nm || true
-              ln -sf /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump || true
-              ln -sf /usr/bin/llvm-strip-18 clang/bin/llvm-strip || true
             fi
           fi
-
-          # Ensure executables are present
-          if [ -d clang/bin ]; then
-            chmod +x clang/bin/* 2>/dev/null || true
-          fi
-
-      - name: Debug Clang toolchain files
-        run: |
-          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
-          echo "CLANG_BIN=$CLANG_BIN"
-          ls -la "$CLANG_BIN" || true
-          echo "Which clang: $(which clang || true)"
-
-      - name: Fix Missing LLVM Tools
-        run: |
-          sudo apt-get install -y llvm-18-tools
-          cd toolchain/linux-x86/clang/bin
-          
-          # Create missing tools if needed
-          [ ! -f llvm-objcopy ] && ln -sf /usr/bin/llvm-objcopy-18 llvm-objcopy || true
-          [ ! -f llvm-readelf ] && ln -sf /usr/bin/llvm-readelf-18 llvm-readelf || true
-          
-          echo "Available LLVM tools:"
-          ls -la llvm-* || true
+          chmod +x clang/bin/* 2>/dev/null || true
 
       - name: Set up Environment
         run: |
@@ -138,12 +89,15 @@ jobs:
           echo "NM=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
           echo "OBJDUMP=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
           echo "STRIP=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
-          echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
-          echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
+
+      - name: Debug Clang toolchain files
+        run: |
+          echo "Listing clang/bin contents:"
+          ls -la "$CLANG_BIN" || true
 
       - name: Set up GCC Cross-Compiler
         run: |
@@ -153,7 +107,7 @@ jobs:
       - name: Clone and Set Up KernelSU
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.kernelsu_version }}
-          tee -a arch/arm64/configs/n200_defconfig > /dev/null <<'EOF'
+          tee -a arch/arm64/configs/n200_defconfig > /dev/null <<EOF
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
@@ -166,140 +120,75 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Create Stubs for Missing OPlus Functions
+      - name: Remove duplicate Oplus stub objects (auto-detect)
         run: |
           set -euo pipefail
-          
-          echo "Creating stubs for missing OPlus sensor functions..."
-          
-          mkdir -p drivers/misc
-          cat > drivers/misc/oplus_stubs.c <<'EOF'
-          #include <linux/module.h>
-          #include <linux/kernel.h>
-          #include <linux/errno.h>
-          
-          // Stub for qcom_smem_get function
-          void *qcom_smem_get(unsigned host, unsigned item, size_t *size)
-          {
-              if (size)
-                  *size = 0;
-              return ERR_PTR(-ENOENT);
-          }
-          EXPORT_SYMBOL(qcom_smem_get);
-          
-          // Stub for get_project function
-          int get_project(void)
-          {
-              // Return a generic OnePlus project ID
-              return 21000;
-          }
-          EXPORT_SYMBOL(get_project);
-          EOF
-          
-          # Add to Makefile if not already present
-          if ! grep -q "oplus_stubs.o" drivers/misc/Makefile 2>/dev/null; then
-            echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
+          STUB_MF="drivers/misc/Makefile"
+          if [ -f "$STUB_MF" ]; then
+            echo "Scanning for Oplus stub objects to remove..."
+            STUBS=$(grep -oE '[^ ]*oplus[^ ]*stubs[^ ]*\.o' "$STUB_MF" || true)
+            if [ -n "$STUBS" ]; then
+              echo "Found stubs: $STUBS"
+              for STUB in $STUBS; do
+                echo "Removing $STUB..."
+                sed -i "\|$STUB|d" "$STUB_MF"
+              done
+            else
+              echo "No Oplus stubs found in $STUB_MF."
+            fi
           fi
-          
-          echo "Stubs created for missing OPlus functions"
 
-      - name: Disable Problematic Datarmnet Modules
+      - name: Fix missing sensor_proc_dir symbol (safe)
         run: |
           set -euo pipefail
-          
-          echo "Disabling problematic datarmnet modules with missing symbols..."
-          
-          # Add configs to disable datarmnet modules
-          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
-          
-          # Disable problematic datarmnet modules
-          # CONFIG_RMNET is not set
-          # CONFIG_RMNET_CTL is not set 
-          # CONFIG_RMNET_CORE is not set
-          # CONFIG_RMNET_OFFLOAD is not set
-          EOF
-          
-          # Also disable in techpack Makefiles to prevent building
-          if [ -d "techpack/datarmnet" ]; then
-            find techpack/datarmnet -name "Makefile*" -exec sed -i 's/^obj-/#obj-/' {} \; 2>/dev/null || true
-            echo "Disabled datarmnet techpack modules"
+          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\\+proc_dir_entry[[:space:]]\\+\\*sensor_proc_dir" -n soc || true)
+          if [ -z "$DEF_FILE" ]; then
+            mkdir -p drivers/misc
+            cat > drivers/misc/sensor_proc_stub.c <<'EOF'
+#include <linux/proc_fs.h>
+struct proc_dir_entry *sensor_proc_dir;
+EXPORT_SYMBOL(sensor_proc_dir);
+EOF
+            echo "obj-y += sensor_proc_stub.o" >> drivers/misc/Makefile
+          else
+            echo "Found real definition — enabling CONFIG_OPLUS_SENSOR_DEVINFO"
+            echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
           fi
-          
-          # Alternative: completely remove from techpack build
-          if [ -f "techpack/Makefile" ]; then
-            sed -i 's/.*datarmnet.*/#&/' techpack/Makefile 2>/dev/null || true
-          fi
-          
-          echo "Datarmnet modules disabled"
 
       - name: Build Kernel
         run: |
-          set -euo pipefail
-          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
-          
-          echo "Building kernel configuration..."
-          make O=out \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
-            CC=${CLANG_BIN}/clang \
-            LD=${CLANG_BIN}/ld.lld \
-            AR=${CLANG_BIN}/llvm-ar \
-            NM=${CLANG_BIN}/llvm-nm \
-            OBJDUMP=${CLANG_BIN}/llvm-objdump \
-            STRIP=${CLANG_BIN}/llvm-strip \
-            OBJCOPY=${CLANG_BIN}/llvm-objcopy \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+          make O=out ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             n200_defconfig
-
-          echo "Building kernel image..."
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            SUBARCH=arm64 \
-            LLVM=1 LLVM_IAS=1 \
-            CC=${CLANG_BIN}/clang \
-            LD=${CLANG_BIN}/ld.lld \
-            AR=${CLANG_BIN}/llvm-ar \
-            NM=${CLANG_BIN}/llvm-nm \
-            OBJDUMP=${CLANG_BIN}/llvm-objdump \
-            STRIP=${CLANG_BIN}/llvm-strip \
-            OBJCOPY=${CLANG_BIN}/llvm-objcopy \
-            CROSS_COMPILE=aarch64-linux-android- \
-            CROSS_COMPILE_ARM32=arm-linux-androideabi-
-
-      - name: Check Build Output
-        run: |
-          ls -la out/arch/arm64/boot/
-          if [ -f out/arch/arm64/boot/Image ]; then
-            echo "✅ Kernel build successful!"
-            echo "Image size: $(stat -c%s out/arch/arm64/boot/Image) bytes"
-          else
-            echo "❌ Kernel build failed - Image not found"
-            exit 1
-          fi
+          
+          make O=out ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            -j$(nproc)
 
       - name: Download Stock Boot Image
         run: |
-          mkdir -p stock
-          wget -O stock/stock_boot.img "${{ inputs.stock_boot_url }}"
+          wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
 
-      - name: Install MagiskBoot (preferred for repack)
+      - name: Install AIK (Android Image Kitchen)
         run: |
-          curl -LO https://raw.githubusercontent.com/topjohnwu/magisk-files/main/tools/magiskboot
-          chmod +x magiskboot
-          sudo mv magiskboot /usr/local/bin/
+          wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
+          unzip -q master.zip
+          mv AIK-Linux-master AIK
+          chmod +x AIK/*.sh
 
-      - name: Unpack and Repack Boot Image with MagiskBoot
+      - name: Unpack and Repack Boot Image
         run: |
-          mkdir -p extracted
-          cd extracted
-          magiskboot unpack ../stock/stock_boot.img
-          cp ../out/arch/arm64/boot/Image kernel
-          # magiskboot repack will reuse original header/ramdisk params
-          magiskboot repack ../stock/stock_boot.img
-          cp new-boot.img ../kernelsu_boot.img
-          cd ..
+          cd AIK
+          ./unpackimg.sh ../stock_boot.img
+          cp ../out/arch/arm64/boot/Image split_img/stock_boot.img-kernel
+          ./repackimg.sh
+          mv image-new.img ../kernelsu_boot.img
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -311,25 +200,3 @@ jobs:
             arch/arm64/configs/n200_defconfig
             out/.config
           retention-days: 30
-
-      - name: Create Release Summary
-        run: |
-          echo "## 🎉 Build Complete!" >> $GITHUB_STEP_SUMMARY
-          echo "### Build Information" >> $GITHUB_STEP_SUMMARY
-          echo "- **KernelSU Version:** ${{ inputs.kernelsu_version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build Date:** $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Kernel Image Size:** $(stat -c%s out/arch/arm64/boot/Image) bytes" >> $GITHUB_STEP_SUMMARY
-          echo "- **Boot Image Size:** $(stat -c%s kernelsu_boot.img) bytes" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📦 Artifacts Generated" >> $GITHUB_STEP_SUMMARY
-          echo "- \`Image\` - Raw kernel image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`kernelsu_boot.img\` - Ready-to-flash boot image" >> $GITHUB_STEP_SUMMARY
-          echo "- \`n200_defconfig\` - Modified kernel configuration" >> $GITHUB_STEP_SUMMARY
-          echo "- \`.config\` - Final build configuration" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 🚀 Installation" >> $GITHUB_STEP_SUMMARY
-          echo "Flash \`kernelsu_boot.img\` to your boot partition:" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "fastboot flash boot kernelsu_boot.img" >> $GITHUB_STEP_SUMMARY
-          echo "fastboot reboot" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
