@@ -141,6 +141,12 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
+      - name: Disable Problematic Drivers (Fallback)
+        run: |
+    echo "# Disable drivers with missing dependencies" >> arch/arm64/configs/n200_defconfig
+    echo "# CONFIG_OPLUS_SENSOR_DEVINFO is not set" >> arch/arm64/configs/n200_defconfig
+    echo "# CONFIG_OPLUS_SENSOR is not set" >> arch/arm64/configs/n200_defconfig
+
       - name: Fix Missing LLVM Tools
         run: |
           # Install system LLVM tools as fallback  
