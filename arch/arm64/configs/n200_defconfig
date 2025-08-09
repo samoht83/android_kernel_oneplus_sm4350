@@ -6,7 +6,7 @@
 #
 # Compiler: Android (12701618, +pgo, +bolt, +lto, +mlgo, based on r536225) clang version 19.0.1 (https://android.googlesource.com/toolchain/llvm-project b3a530ec6537146650e42be89f1089e9a3588460)
 #
-CONFIG_OPLUS_SYSTEM_KERNEL_QCOM=y
+# CONFIG_OPLUS_SYSTEM_KERNEL_QCOM=y
 # CONFIG_OPLUS_SYSTEM_KERNEL_MTK is not set
 # CONFIG_OPLUS_AGING_DEBUG is not set
 # CONFIG_OPLUS_KASAN_DEBUG is not set
