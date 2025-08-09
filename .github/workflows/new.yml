@@ -141,20 +141,6 @@ jobs:
           CONFIG_TMPFS=y
           EOF
 
-      - name: Fix Kernel Configuration
-        run: |
-          echo "Fixing missing symbol dependencies..."
-          
-          cat << 'EOF' >> arch/arm64/configs/n200_defconfig
-          # Fix missing symbols
-          CONFIG_QCOM_SMEM=y
-          # Disable problematic sensor drivers
-          # CONFIG_OPLUS_SENSOR_DEVINFO is not set
-          # CONFIG_OPLUS_SENSOR is not set
-          EOF
-          
-          echo "Updated defconfig with missing dependencies"
-
       - name: Fix Missing LLVM Tools
         run: |
           # Install system LLVM tools as fallback  
@@ -199,16 +185,64 @@ jobs:
           echo "OBJCOPY=$CLANG_BIN/llvm-objcopy" >> $GITHUB_ENV
           echo "READELF=$CLANG_BIN/llvm-readelf" >> $GITHUB_ENV
 
+      - name: Debug Build System
+        run: |
+          echo "=== Checking defconfig ==="
+          grep -i sensor arch/arm64/configs/n200_defconfig || echo "No sensor configs found"
+          
+          echo "=== Searching for sensor driver files ==="
+          find . -name "*sensor*" -type f | grep -E '\.(c|h)$' | head -10 || echo "No sensor files found"
+          
+          echo "=== Checking if oplus_sensor_devinfo is being built ==="
+          find . -name "Makefile*" -exec grep -H "oplus_sensor_devinfo" {} \; 2>/dev/null || echo "Not found in Makefiles"
+
+      - name: Remove Problematic Object from Build
+        run: |
+          echo "Searching for and removing oplus_sensor_devinfo from build..."
+          
+          # Find all Makefiles that might build this driver
+          echo "Searching for Makefiles containing oplus_sensor_devinfo..."
+          find . -name "Makefile*" -type f | xargs grep -l "oplus_sensor_devinfo" 2>/dev/null || true
+          
+          # Comment out the driver in Makefiles
+          echo "Commenting out driver in Makefiles..."
+          find . -name "Makefile*" -type f -exec sed -i 's/.*oplus_sensor_devinfo.*/#&/' {} \; 2>/dev/null || true
+          
+          # Also try to find it in the soc/oplus directory specifically
+          if [ -d "soc/oplus" ]; then
+            echo "Found soc/oplus directory, searching for Makefiles..."
+            find soc/oplus -name "Makefile*" -type f | xargs cat 2>/dev/null || true
+            find soc/oplus -name "Makefile*" -type f -exec sed -i 's/.*sensor.*/#&/' {} \; 2>/dev/null || true
+          fi
+          
+          # Rename the source file to prevent it from being found
+          if [ -f "soc/oplus/sensor/oplus_sensor_devinfo.c" ]; then
+            echo "Renaming problematic source file..."
+            mv soc/oplus/sensor/oplus_sensor_devinfo.c soc/oplus/sensor/oplus_sensor_devinfo.c.disabled
+          fi
+          
+          # Remove any sensor devinfo related files
+          find . -name "*sensor_devinfo*" -type f -exec echo "Found: {}" \;
+          find . -name "*sensor_devinfo*" -type f -exec rm -f {} \; 2>/dev/null || true
+          
+          echo "Removed oplus_sensor_devinfo from build system"
+
       - name: Fix Kernel Configuration
         run: |
           echo "Fixing missing symbol dependencies..."
           
-          # Try to add missing Qualcomm SMEM configuration
+          # Clean the config first
+          make O=out mrproper 2>/dev/null || true
+          
+          # Add missing Qualcomm SMEM configuration and disable problematic drivers
           cat << 'EOF' >> arch/arm64/configs/n200_defconfig
           # Fix missing symbols
           CONFIG_QCOM_SMEM=y
-          # Disable problematic sensor driver as fallback
+          # Explicitly disable problematic drivers
           # CONFIG_OPLUS_SENSOR_DEVINFO is not set
+          # CONFIG_OPLUS_SENSOR is not set
+          # CONFIG_OPLUS_FEATURE_SENSOR_DRIVER is not set
+          # CONFIG_OPLUS_FEATURE_SENSOR_SMEM is not set
           EOF
           
           echo "Updated defconfig with missing dependencies"
