@@ -25,13 +25,14 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file llvm-18-tools
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file
 
       - name: Cache Clang Toolchain
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: toolchain/linux-x86/clang
+          # include runner.os + version so cache is specific
           key: ${{ runner.os }}-clang-18.1.8-v1
           restore-keys: |
             ${{ runner.os }}-clang-18.1.8-
@@ -40,143 +41,175 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          set -euo pipefail
+          set -xeuo pipefail
           mkdir -p toolchain/linux-x86
-          
-          # Try multiple download methods
           CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-          
+          TMP_ARCH=clang.tar.xz
+
           echo "Downloading Clang toolchain..."
-          if ! wget --timeout=30 --tries=3 -q "$CLANG_URL" -O clang.tar.xz; then
+          if ! wget --timeout=30 --tries=3 -q "$CLANG_URL" -O "$TMP_ARCH"; then
             echo "wget failed, trying curl..."
-            curl -L --connect-timeout 30 --retry 3 --retry-delay 5 -o clang.tar.xz "$CLANG_URL"
+            curl -L --connect-timeout 30 --retry 3 --retry-delay 5 -o "$TMP_ARCH" "$CLANG_URL"
           fi
-          
-          # Verify download
-          if [ ! -f clang.tar.xz ] || [ ! -s clang.tar.xz ]; then
+
+          if [ ! -f "$TMP_ARCH" ] || [ ! -s "$TMP_ARCH" ]; then
             echo "Error: Failed to download clang toolchain or file is empty"
+            ls -l "$TMP_ARCH" || true
             exit 1
           fi
-          
-          echo "Extracting toolchain..."
-          # Get the top directory name more safely
-          TOP_DIR="$(tar -tf clang.tar.xz 2>/dev/null | head -1 | sed 's|/.*||')"
+
+          echo "Examining archive top-level directory..."
+          TOP_DIR="$(tar -tf "$TMP_ARCH" 2>/dev/null | sed -n '1p' | sed 's|/.*||')"
           if [ -z "$TOP_DIR" ]; then
             echo "Error: Could not determine top directory from archive"
             exit 1
           fi
-          
-          tar -xf clang.tar.xz
+
+          tar -xf "$TMP_ARCH"
           mv "$TOP_DIR" toolchain/linux-x86/clang
-          rm clang.tar.xz
-          
-          # Verify extraction
+          rm -f "$TMP_ARCH"
+
           if [ ! -d "toolchain/linux-x86/clang/bin" ]; then
-            echo "Error: Clang toolchain extraction failed"
+            echo "Error: Clang toolchain extraction failed (bin missing)"
+            ls -la toolchain/linux-x86 || true
             exit 1
           fi
-          
           echo "Clang toolchain setup complete"
 
       - name: Set up Environment Variables
         shell: bash
         run: |
-          echo "$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin" >> $GITHUB_PATH
+          # Add clang and gcc later to PATH via GITHUB_PATH
+          echo "${GITHUB_WORKSPACE}/toolchain/linux-x86/clang/bin" >> $GITHUB_PATH
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
 
-      - name: Set up GCC Cross-Compilers
+      - name: Set up GCC Cross-Compilers (prebuilts)
         shell: bash
         run: |
-          # 64-bit toolchain
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
-          echo "$GITHUB_WORKSPACE/gcc64/bin" >> $GITHUB_PATH
-          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-          # 32-bit toolchain
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
-          echo "$GITHUB_WORKSPACE/gcc32/bin" >> $GITHUB_PATH
-          echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+          set -xeuo pipefail
+          # These prebuilts are large; shallow clones reduce transfer but may still be heavy.
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64 || true
+          if [ -d gcc64/bin ]; then
+            echo "${GITHUB_WORKSPACE}/gcc64/bin" >> $GITHUB_PATH
+            echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+          else
+            echo "Warning: gcc64 prebuilts not found; ensure you have a cross-compiler in PATH or cache it."
+          fi
+
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32 || true
+          if [ -d gcc32/bin ]; then
+            echo "${GITHUB_WORKSPACE}/gcc32/bin" >> $GITHUB_PATH
+            echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
+          else
+            echo "Warning: gcc32 prebuilts not found; ensure you have a cross-compiler in PATH or cache it."
+          fi
 
       - name: Integrate KernelSU and Apply Patches
         shell: bash
         run: |
-          set -euo pipefail
+          set -xeuo pipefail
 
-          # Integrate KernelSU
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
+          # KernelSU setup script (download & run). The script may expect to be run from kernel root.
+          curl -fsSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- "${{ inputs.kernelsu_version }}"
 
-          # Append required configs to defconfig
-          cat >> arch/arm64/configs/n200_defconfig << 'EOF'
-          # KernelSU Requirements
-          CONFIG_KPROBES=y
-          CONFIG_HAVE_KPROBES=y
-          CONFIG_KPROBE_EVENTS=y
-          CONFIG_OVERLAY_FS=y
-          CONFIG_KERNELSU=y
-          # Patches for build errors
-          # CONFIG_RMNET is not set
-          EOF
+          # Append required configs to defconfig (make sure defconfig path matches your kernel)
+          # Ensure this is the right defconfig name for your device tree (n200_defconfig used here)
+          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
+# KernelSU Requirements
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_KERNELSU=y
+# Patches for build errors
+# CONFIG_RMNET is not set
+EOF
 
-          # Create stubs for missing symbols to prevent linker errors
+          # Create simple stubs to avoid duplicate symbol/linker issues (example)
           mkdir -p drivers/misc
-          cat > drivers/misc/oplus_stubs.c << 'EOC'
-          #include <linux/module.h>
-          #include <linux/kernel.h>
-          #include <linux/errno.h>
+          cat > drivers/misc/oplus_stubs.c <<'EOC'
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/errno.h>
 
-          void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
-              pr_err("STUB: qcom_smem_get called\n");
-              if (size) *size = 0;
-              return ERR_PTR(-ENOENT);
-          }
-          EXPORT_SYMBOL(qcom_smem_get);
+void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
+    pr_err("STUB: qcom_smem_get called\n");
+    if (size) *size = 0;
+    return ERR_PTR(-ENOENT);
+}
+EXPORT_SYMBOL(qcom_smem_get);
 
-          int get_project(void) {
-              pr_warn("STUB: get_project called, returning default\n");
-              return 21000;
-          }
-          EXPORT_SYMBOL(get_project);
-          EOC
+int get_project(void) {
+    pr_warn("STUB: get_project called, returning default\n");
+    return 21000;
+}
+EXPORT_SYMBOL(get_project);
 
-          # Add the stub object to the build
-          echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
+MODULE_LICENSE("GPL");
+EOC
+
+          # Ensure Makefile exists and add obj line idempotently
+          MFILE=drivers/misc/Makefile
+          if ! grep -q "oplus_stubs.o" "$MFILE" 2>/dev/null; then
+            echo -e "\n# add oplus stubs" >> "$MFILE"
+            echo "obj-y += oplus_stubs.o" >> "$MFILE"
+          fi
 
       - name: Build Kernel
         shell: bash
         run: |
-          set -euo pipefail
+          set -xeuo pipefail
+          # Use O=out to keep build artifacts out-of-tree
           make O=out n200_defconfig
           make -j"$(nproc)" O=out
 
       - name: Check Build Output
         shell: bash
         run: |
+          set -xeuo pipefail
           if [ -f out/arch/arm64/boot/Image ]; then
             echo "✅ Kernel build successful!"
             ls -la out/arch/arm64/boot/
           else
             echo "❌ Kernel build failed - Image not found."
+            ls -la out || true
             exit 1
           fi
 
       - name: Download Stock Boot Image and AIK
         shell: bash
         run: |
+          set -xeuo pipefail
           wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
+          # AIK-Linux zip used for split/repack script
           wget -q https://github.com/osm0sis/AIK-Linux/archive/master.zip -O AIK.zip
           unzip -q AIK.zip
           mv AIK-Linux-master AIK
-          chmod +x AIK/*.sh
+          chmod -R +x AIK/*.sh || true
 
-      - name: Repack Boot Image with New Kernel
+      - name: Repack Boot Image with New Kernel (AIK)
         shell: bash
         run: |
-          set -euo pipefail
+          set -xeuo pipefail
           cd AIK
           ./unpackimg.sh ../stock_boot.img
-          cp ../out/arch/arm64/boot/Image ./split_img/*-kernel
+
+          # find the kernel file in split_img (could be <name>-kernel or zImage or kernel)
+          KERNEL_FILE=$(ls split_img | grep -E 'kernel|zImage|Image|kernel.img' | head -n1 || true)
+          if [ -z "$KERNEL_FILE" ]; then
+            echo "Could not find existing kernel file in split_img. Listing contents:"
+            ls -la split_img
+            exit 1
+          fi
+
+          echo "Replacing split_img/$KERNEL_FILE with our built kernel image"
+          # Copy the built kernel to overwrite the existing kernel file
+          # If AIK expects a particular format (zImage, dtb appended, etc.) you may need to adapt this step.
+          cp -f ../out/arch/arm64/boot/Image "split_img/${KERNEL_FILE}"
+
           ./repackimg.sh
           mv image-new.img ../kernelsu_boot.img
           cd ..
@@ -197,15 +230,13 @@ jobs:
         shell: bash
         run: |
           cat >> $GITHUB_STEP_SUMMARY << 'EOL'
-          ## 🎉 Build Complete!
-          - **KernelSU Version:** ${{ inputs.kernelsu_version }}
-          - **Build Date:** $(date)
-          ### 📦 Artifacts
-          - `kernelsu_boot.img` (Ready-to-flash boot image)
-          - `Image` (Raw kernel image)
-          ### 🚀 Installation
-          Flash `kernelsu_boot.img` to your boot partition via Fastboot:
-          ```bash
-          fastboot flash boot kernelsu_boot.img
-          ```
-          EOL
+## 🎉 Build Complete!
+- **KernelSU Version:** ${{ inputs.kernelsu_version }}
+- **Build Date:** $(date --utc)
+### 📦 Artifacts
+- `kernelsu_boot.img` (Ready-to-flash boot image)
+- `Image` (Raw kernel image)
+### 🚀 Installation
+Flash `kernelsu_boot.img` to your boot partition via Fastboot:
+```bash
+fastboot flash boot kernelsu_boot.img
