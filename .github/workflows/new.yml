@@ -80,36 +80,36 @@ jobs:
 
           # Append required configs to defconfig
           cat >> arch/arm64/configs/n200_defconfig << 'EOF'
-# KernelSU Requirements
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_OVERLAY_FS=y
-CONFIG_KERNELSU=y
-# Patches for build errors
-# CONFIG_RMNET is not set
-EOF
+          # KernelSU Requirements
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_OVERLAY_FS=y
+          CONFIG_KERNELSU=y
+          # Patches for build errors
+          # CONFIG_RMNET is not set
+          EOF
 
           # Create stubs for missing symbols to prevent linker errors
           mkdir -p drivers/misc
           cat > drivers/misc/oplus_stubs.c << 'EOC'
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/errno.h>
+          #include <linux/module.h>
+          #include <linux/kernel.h>
+          #include <linux/errno.h>
 
-void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
-    pr_err("STUB: qcom_smem_get called\n");
-    if (size) *size = 0;
-    return ERR_PTR(-ENOENT);
-}
-EXPORT_SYMBOL(qcom_smem_get);
+          void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
+              pr_err("STUB: qcom_smem_get called\n");
+              if (size) *size = 0;
+              return ERR_PTR(-ENOENT);
+          }
+          EXPORT_SYMBOL(qcom_smem_get);
 
-int get_project(void) {
-    pr_warn("STUB: get_project called, returning default\n");
-    return 21000;
-}
-EXPORT_SYMBOL(get_project);
-EOC
+          int get_project(void) {
+              pr_warn("STUB: get_project called, returning default\n");
+              return 21000;
+          }
+          EXPORT_SYMBOL(get_project);
+          EOC
 
           # Add the stub object to the build
           echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
@@ -167,16 +167,16 @@ EOC
       - name: Create Release Summary
         shell: bash
         run: |
-          {
-            echo "## 🎉 Build Complete!"
-            echo "- **KernelSU Version:** ${{ inputs.kernelsu_version }}"
-            echo "- **Build Date:** $(date)"
-            echo "### 📦 Artifacts"
-            echo "- \`kernelsu_boot.img\` (Ready-to-flash boot image)"
-            echo "- \`Image\` (Raw kernel image)"
-            echo "### 🚀 Installation"
-            echo "Flash \`kernelsu_boot.img\` to your boot partition via Fastboot:"
-            echo '```bash'
-            echo "fastboot flash boot kernelsu_boot.img"
-            echo '```'
-          } >> $GITHUB_STEP_SUMMARY
+          cat >> $GITHUB_STEP_SUMMARY << 'EOL'
+          ## 🎉 Build Complete!
+          - **KernelSU Version:** ${{ inputs.kernelsu_version }}
+          - **Build Date:** $(date)
+          ### 📦 Artifacts
+          - `kernelsu_boot.img` (Ready-to-flash boot image)
+          - `Image` (Raw kernel image)
+          ### 🚀 Installation
+          Flash `kernelsu_boot.img` to your boot partition via Fastboot:
+          ```bash
+          fastboot flash boot kernelsu_boot.img
+          ```
+          EOL
