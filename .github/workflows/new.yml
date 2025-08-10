@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file llvm-18-tools
 
       - name: Cache Clang Toolchain
         id: cache-clang
@@ -40,78 +40,46 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          set -xeuo pipefail
+          set -euo pipefail
           mkdir -p toolchain/linux-x86
           CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-          TMP_ARCH=clang.tar.xz
-
-          echo "Downloading Clang toolchain..."
-          if ! wget --timeout=30 --tries=3 -q "$CLANG_URL" -O "$TMP_ARCH"; then
-            echo "wget failed, trying curl..."
-            curl -L --connect-timeout 30 --retry 3 --retry-delay 5 -o "$TMP_ARCH" "$CLANG_URL"
-          fi
-
-          if [ ! -f "$TMP_ARCH" ] || [ ! -s "$TMP_ARCH" ]; then
-            echo "Error: Failed to download clang toolchain or file is empty"
-            ls -l "$TMP_ARCH" || true
-            exit 1
-          fi
-
-          echo "Examining archive top-level directory..."
-          TOP_DIR="$(tar -tf "$TMP_ARCH" 2>/dev/null | sed -n '1p' | sed 's|/.*||')"
-          if [ -z "$TOP_DIR" ]; then
-            echo "Error: Could not determine top directory from archive"
-            exit 1
-          fi
-
-          tar -xf "$TMP_ARCH"
+          wget -q "$CLANG_URL" -O clang.tar.xz
+          TOP_DIR="$(tar -tf clang.tar.xz | head -1 | cut -f1 -d'/')"
+          tar -xf clang.tar.xz
           mv "$TOP_DIR" toolchain/linux-x86/clang
-          rm -f "$TMP_ARCH"
-
-          if [ ! -d "toolchain/linux-x86/clang/bin" ]; then
-            echo "Error: Clang toolchain extraction failed (bin missing)"
-            ls -la toolchain/linux-x86 || true
-            exit 1
-          fi
-          echo "Clang toolchain setup complete"
+          rm clang.tar.xz
 
       - name: Set up Environment Variables
         shell: bash
         run: |
-          echo "${GITHUB_WORKSPACE}/toolchain/linux-x86/clang/bin" >> $GITHUB_PATH
+          echo "$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin" >> $GITHUB_PATH
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
           echo "LLVM=1" >> $GITHUB_ENV
           echo "LLVM_IAS=1" >> $GITHUB_ENV
 
-      - name: Set up GCC Cross-Compilers (prebuilts)
+      - name: Set up GCC Cross-Compilers
         shell: bash
         run: |
-          set -xeuo pipefail
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64 || true
-          if [ -d gcc64/bin ]; then
-            echo "${GITHUB_WORKSPACE}/gcc64/bin" >> $GITHUB_PATH
-            echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-          else
-            echo "Warning: gcc64 prebuilts not found; ensure you have a cross-compiler in PATH or cache it."
-          fi
-
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32 || true
-          if [ -d gcc32/bin ]; then
-            echo "${GITHUB_WORKSPACE}/gcc32/bin" >> $GITHUB_PATH
-            echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
-          else
-            echo "Warning: gcc32 prebuilts not found; ensure you have a cross-compiler in PATH or cache it."
-          fi
+          # 64-bit toolchain
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+          echo "$GITHUB_WORKSPACE/gcc64/bin" >> $GITHUB_PATH
+          echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+          # 32-bit toolchain
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
+          echo "$GITHUB_WORKSPACE/gcc32/bin" >> $GITHUB_PATH
+          echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
 
       - name: Integrate KernelSU and Apply Patches
         shell: bash
         run: |
-          set -xeuo pipefail
-          curl -fsSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- "${{ inputs.kernelsu_version }}"
+          set -euo pipefail
+
+          # Integrate KernelSU
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
 
           # Append required configs to defconfig
-          cat >> arch/arm64/configs/n200_defconfig <<'EOF'
+          cat >> arch/arm64/configs/n200_defconfig << 'EOF'
 # KernelSU Requirements
 CONFIG_KPROBES=y
 CONFIG_HAVE_KPROBES=y
@@ -121,9 +89,10 @@ CONFIG_KERNELSU=y
 # Patches for build errors
 # CONFIG_RMNET is not set
 EOF
-          # Create simple stubs to avoid duplicate symbol/linker issues
+
+          # Create stubs for missing symbols to prevent linker errors
           mkdir -p drivers/misc
-          cat > drivers/misc/oplus_stubs.c <<'EOC'
+          cat > drivers/misc/oplus_stubs.c << 'EOC'
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -140,63 +109,45 @@ int get_project(void) {
     return 21000;
 }
 EXPORT_SYMBOL(get_project);
-
-MODULE_LICENSE("GPL");
 EOC
-          # Ensure Makefile exists and add obj line idempotently
-          MFILE=drivers/misc/Makefile
-          if ! grep -q "oplus_stubs.o" "$MFILE" 2>/dev/null; then
-            echo -e "\n# add oplus stubs" >> "$MFILE"
-            echo "obj-y += oplus_stubs.o" >> "$MFILE"
-          fi
+
+          # Add the stub object to the build
+          echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
 
       - name: Build Kernel
         shell: bash
         run: |
-          set -xeuo pipefail
+          set -euo pipefail
           make O=out n200_defconfig
           make -j"$(nproc)" O=out
 
       - name: Check Build Output
         shell: bash
         run: |
-          set -xeuo pipefail
           if [ -f out/arch/arm64/boot/Image ]; then
             echo "✅ Kernel build successful!"
             ls -la out/arch/arm64/boot/
           else
             echo "❌ Kernel build failed - Image not found."
-            ls -la out || true
             exit 1
           fi
 
       - name: Download Stock Boot Image and AIK
         shell: bash
         run: |
-          set -xeuo pipefail
           wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
           wget -q https://github.com/osm0sis/AIK-Linux/archive/master.zip -O AIK.zip
           unzip -q AIK.zip
           mv AIK-Linux-master AIK
-          chmod -R +x AIK/*.sh || true
+          chmod +x AIK/*.sh
 
-      - name: Repack Boot Image with New Kernel (AIK)
+      - name: Repack Boot Image with New Kernel
         shell: bash
         run: |
-          set -xeuo pipefail
+          set -euo pipefail
           cd AIK
           ./unpackimg.sh ../stock_boot.img
-
-          KERNEL_FILE=$(ls split_img | grep -E 'kernel|zImage|Image|kernel.img' | head -n1 || true)
-          if [ -z "$KERNEL_FILE" ]; then
-            echo "Could not find existing kernel file in split_img. Listing contents:"
-            ls -la split_img
-            exit 1
-          fi
-
-          echo "Replacing split_img/$KERNEL_FILE with our built kernel image"
-          cp -f ../out/arch/arm64/boot/Image "split_img/${KERNEL_FILE}"
-
+          cp ../out/arch/arm64/boot/Image ./split_img/*-kernel
           ./repackimg.sh
           mv image-new.img ../kernelsu_boot.img
           cd ..
@@ -216,14 +167,16 @@ EOC
       - name: Create Release Summary
         shell: bash
         run: |
-          cat >> $GITHUB_STEP_SUMMARY << EOL
-## 🎉 Build Complete!
-- **KernelSU Version:** ${{ inputs.kernelsu_version }}
-- **Build Date:** $(date --utc)
-### 📦 Artifacts
-- `kernelsu_boot.img` (Ready-to-flash boot image)
-- `Image` (Raw kernel image)
-### 🚀 Installation
-Flash `kernelsu_boot.img` to your boot partition via Fastboot:
-```bash
-fastboot flash boot kernelsu_boot.img
+          {
+            echo "## 🎉 Build Complete!"
+            echo "- **KernelSU Version:** ${{ inputs.kernelsu_version }}"
+            echo "- **Build Date:** $(date)"
+            echo "### 📦 Artifacts"
+            echo "- \`kernelsu_boot.img\` (Ready-to-flash boot image)"
+            echo "- \`Image\` (Raw kernel image)"
+            echo "### 🚀 Installation"
+            echo "Flash \`kernelsu_boot.img\` to your boot partition via Fastboot:"
+            echo '```bash'
+            echo "fastboot flash boot kernelsu_boot.img"
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
