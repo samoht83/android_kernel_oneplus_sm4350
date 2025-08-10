@@ -42,12 +42,41 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p toolchain/linux-x86
+          
+          # Try multiple download methods
           CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
-          wget -q "$CLANG_URL" -O clang.tar.xz
-          TOP_DIR="$(tar -tf clang.tar.xz | head -1 | cut -f1 -d'/')"
+          
+          echo "Downloading Clang toolchain..."
+          if ! wget --timeout=30 --tries=3 -q "$CLANG_URL" -O clang.tar.xz; then
+            echo "wget failed, trying curl..."
+            curl -L --connect-timeout 30 --retry 3 --retry-delay 5 -o clang.tar.xz "$CLANG_URL"
+          fi
+          
+          # Verify download
+          if [ ! -f clang.tar.xz ] || [ ! -s clang.tar.xz ]; then
+            echo "Error: Failed to download clang toolchain or file is empty"
+            exit 1
+          fi
+          
+          echo "Extracting toolchain..."
+          # Get the top directory name more safely
+          TOP_DIR="$(tar -tf clang.tar.xz 2>/dev/null | head -1 | sed 's|/.*||')"
+          if [ -z "$TOP_DIR" ]; then
+            echo "Error: Could not determine top directory from archive"
+            exit 1
+          fi
+          
           tar -xf clang.tar.xz
           mv "$TOP_DIR" toolchain/linux-x86/clang
           rm clang.tar.xz
+          
+          # Verify extraction
+          if [ ! -d "toolchain/linux-x86/clang/bin" ]; then
+            echo "Error: Clang toolchain extraction failed"
+            exit 1
+          fi
+          
+          echo "Clang toolchain setup complete"
 
       - name: Set up Environment Variables
         shell: bash
