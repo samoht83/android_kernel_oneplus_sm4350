@@ -32,7 +32,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: toolchain/linux-x86/clang
-          # include runner.os + version so cache is specific
           key: ${{ runner.os }}-clang-18.1.8-v1
           restore-keys: |
             ${{ runner.os }}-clang-18.1.8-
@@ -79,7 +78,6 @@ jobs:
       - name: Set up Environment Variables
         shell: bash
         run: |
-          # Add clang and gcc later to PATH via GITHUB_PATH
           echo "${GITHUB_WORKSPACE}/toolchain/linux-x86/clang/bin" >> $GITHUB_PATH
           echo "ARCH=arm64" >> $GITHUB_ENV
           echo "SUBARCH=arm64" >> $GITHUB_ENV
@@ -90,7 +88,6 @@ jobs:
         shell: bash
         run: |
           set -xeuo pipefail
-          # These prebuilts are large; shallow clones reduce transfer but may still be heavy.
           git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64 || true
           if [ -d gcc64/bin ]; then
             echo "${GITHUB_WORKSPACE}/gcc64/bin" >> $GITHUB_PATH
@@ -111,12 +108,9 @@ jobs:
         shell: bash
         run: |
           set -xeuo pipefail
-
-          # KernelSU setup script (download & run). The script may expect to be run from kernel root.
           curl -fsSL "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- "${{ inputs.kernelsu_version }}"
 
-          # Append required configs to defconfig (make sure defconfig path matches your kernel)
-          # Ensure this is the right defconfig name for your device tree (n200_defconfig used here)
+          # Append required configs to defconfig
           cat >> arch/arm64/configs/n200_defconfig <<'EOF'
 # KernelSU Requirements
 CONFIG_KPROBES=y
@@ -127,8 +121,7 @@ CONFIG_KERNELSU=y
 # Patches for build errors
 # CONFIG_RMNET is not set
 EOF
-
-          # Create simple stubs to avoid duplicate symbol/linker issues (example)
+          # Create simple stubs to avoid duplicate symbol/linker issues
           mkdir -p drivers/misc
           cat > drivers/misc/oplus_stubs.c <<'EOC'
 #include <linux/module.h>
@@ -150,7 +143,6 @@ EXPORT_SYMBOL(get_project);
 
 MODULE_LICENSE("GPL");
 EOC
-
           # Ensure Makefile exists and add obj line idempotently
           MFILE=drivers/misc/Makefile
           if ! grep -q "oplus_stubs.o" "$MFILE" 2>/dev/null; then
@@ -162,7 +154,6 @@ EOC
         shell: bash
         run: |
           set -xeuo pipefail
-          # Use O=out to keep build artifacts out-of-tree
           make O=out n200_defconfig
           make -j"$(nproc)" O=out
 
@@ -184,7 +175,6 @@ EOC
         run: |
           set -xeuo pipefail
           wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
-          # AIK-Linux zip used for split/repack script
           wget -q https://github.com/osm0sis/AIK-Linux/archive/master.zip -O AIK.zip
           unzip -q AIK.zip
           mv AIK-Linux-master AIK
@@ -197,7 +187,6 @@ EOC
           cd AIK
           ./unpackimg.sh ../stock_boot.img
 
-          # find the kernel file in split_img (could be <name>-kernel or zImage or kernel)
           KERNEL_FILE=$(ls split_img | grep -E 'kernel|zImage|Image|kernel.img' | head -n1 || true)
           if [ -z "$KERNEL_FILE" ]; then
             echo "Could not find existing kernel file in split_img. Listing contents:"
@@ -206,8 +195,6 @@ EOC
           fi
 
           echo "Replacing split_img/$KERNEL_FILE with our built kernel image"
-          # Copy the built kernel to overwrite the existing kernel file
-          # If AIK expects a particular format (zImage, dtb appended, etc.) you may need to adapt this step.
           cp -f ../out/arch/arm64/boot/Image "split_img/${KERNEL_FILE}"
 
           ./repackimg.sh
@@ -229,7 +216,7 @@ EOC
       - name: Create Release Summary
         shell: bash
         run: |
-          cat >> $GITHUB_STEP_SUMMARY << 'EOL'
+          cat >> $GITHUB_STEP_SUMMARY << EOL
 ## 🎉 Build Complete!
 - **KernelSU Version:** ${{ inputs.kernelsu_version }}
 - **Build Date:** $(date --utc)
