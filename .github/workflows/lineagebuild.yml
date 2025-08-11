@@ -16,7 +16,6 @@ jobs:
     env:
       KERNEL_REPO: https://github.com/samoht83/android_kernel_oneplus_sm4350.git
       KERNEL_BRANCH: lineage-22.2
-      KERNELSU_TAG: v0.9.5
       CLANG_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
 
     steps:
@@ -24,26 +23,27 @@ jobs:
       run: |
         git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
 
-    - name: Download and extract Clang 14 toolchain
+    - name: Download and extract Clang toolchain
       run: |
         curl -L $CLANG_URL | tar -xJ -C $HOME
-        export PATH=$HOME/clang-r450784d/bin:$PATH
+        export PATH=$HOME/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04/bin:$PATH
         clang --version
 
-    - name: Clone KernelSU and setup
+    - name: Setup KernelSU-Next
       run: |
         cd kernel
-        git clone https://github.com/tiann/KernelSU.git kernelsu
-        cd kernelsu
-        git checkout ${{ env.KERNELSU_TAG }}
-        ./setup.sh ../
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-    - name: Enable KernelSU in defconfig
+    - name: Enable KernelSU in defconfig (only if missing)
       run: |
         DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
         if [ -n "$DEFCONFIG" ]; then
-          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-          echo "KernelSU enabled in $DEFCONFIG"
+          if ! grep -q "^CONFIG_KSU=y" "$DEFCONFIG"; then
+            echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+            echo "Added CONFIG_KSU=y to $DEFCONFIG"
+          else
+            echo "CONFIG_KSU already present in $DEFCONFIG"
+          fi
         else
           echo "holi defconfig not found!"
           exit 1
@@ -57,7 +57,7 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-android-
-        export PATH=$HOME/clang-r450784d/bin:$PATH
+        export PATH=$HOME/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04/bin:$PATH
         cd kernel
         make O=out holi_defconfig
         make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
