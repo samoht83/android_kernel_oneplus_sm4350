@@ -27,13 +27,6 @@ jobs:
         ref: 'lineage-22.2'
         path: kernel
 
-    - name: Checkout KernelSU-next
-      uses: actions/checkout@v4
-      with:
-        repository: 'tiann/KernelSU-next'
-        ref: 'main'
-        path: KernelSU-next
-
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -72,19 +65,10 @@ jobs:
         fi
         echo "$HOME/aarch64-gcc/bin" >> $GITHUB_PATH
 
-    - name: Copy KernelSU-next patches to kernel tree
+    - name: Setup KernelSU-next via official setup.sh
       run: |
-        if [ -d "KernelSU-next/kernel" ]; then
-          cp -r KernelSU-next/kernel/* kernel/
-          if [ -f "KernelSU-next/kernel/patch.sh" ]; then
-            pushd kernel
-            bash ../KernelSU-next/kernel/patch.sh .
-            popd
-          fi
-        else
-          echo "KernelSU-next kernel folder not found, copying top-level files instead."
-          cp -r KernelSU-next/* kernel/ || true
-        fi
+        cd kernel
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
     - name: Ensure CONFIG_KSU in defconfig
       run: |
