@@ -17,16 +17,43 @@ jobs:
       KERNEL_REPO: https://github.com/samoht83/android_kernel_oneplus_sm4350.git
       KERNEL_BRANCH: lineage-22.2
       CLANG_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
+      CLANG_DIR: ${{ github.workspace }}/clang
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
 
     steps:
     - name: Checkout Kernel source
       run: |
         git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
 
-    - name: Download and extract Clang toolchain
+    - name: Install dependencies (libtinfo5 + ccache)
       run: |
-        curl -L $CLANG_URL | tar -xJ -C $HOME
-        export PATH=$HOME/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04/bin:$PATH
+        sudo apt-get update
+        sudo apt-get install -y libtinfo5 ccache
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ github.workflow }}
+        restore-keys: |
+          ccache-
+
+    - name: Restore Clang toolchain
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CLANG_DIR }}
+        key: clang-${{ env.CLANG_URL }}
+    
+    - name: Download and extract Clang toolchain (if missing)
+      run: |
+        if [ ! -d "$CLANG_DIR/bin" ]; then
+          mkdir -p "$CLANG_DIR"
+          curl -L $CLANG_URL | tar -xJ --strip-components=1 -C "$CLANG_DIR"
+        fi
+        export PATH=$CLANG_DIR/bin:$PATH
         clang --version
 
     - name: Setup KernelSU-Next
@@ -57,10 +84,13 @@ jobs:
       run: |
         export ARCH=arm64
         export CROSS_COMPILE=aarch64-linux-android-
-        export PATH=$HOME/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04/bin:$PATH
+        export PATH=$CLANG_DIR/bin:$PATH
+        export CC="ccache clang"
+        export CXX="ccache clang++"
         cd kernel
         make O=out holi_defconfig
-        make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+        make -j$(nproc) O=out CC="ccache clang" CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+        ccache -s
 
     - name: Download magiskboot tool
       run: |
