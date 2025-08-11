@@ -42,27 +42,20 @@ jobs:
         echo "Downloading Clang 14 prebuilts from AOSP Git..."
         TOOLCHAIN_DIR="toolchain/linux-x86"
         CLANG_REVISION="clang-r450784d"
-        CLANG_REPO_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
         
         mkdir -p "${TOOLCHAIN_DIR}"
         
-        # FIX: Use a sparse git checkout. This is the correct and efficient method
-        # to download a specific subdirectory from the large AOSP repository.
-        git clone \
-          --branch main \
-          --depth=1 \
-          --filter=blob:none \
-          --no-checkout \
-          "${CLANG_REPO_URL}" "_temp_clang_clone"
-          
-        cd _temp_clang_clone
-        git sparse-checkout set "${CLANG_REVISION}"
-        git checkout
-        cd ..
+        # FIX: Use direct download from AOSP prebuilts instead of git clone
+        # This is more reliable and faster than cloning the entire repository
+        echo "Downloading prebuilt Clang toolchain..."
+        wget -q --show-progress \
+          "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/main/${CLANG_REVISION}.tar.gz" \
+          -O "${CLANG_REVISION}.tar.gz"
         
-        # Move the downloaded toolchain to its final location and clean up the temp clone
-        mv "_temp_clang_clone/${CLANG_REVISION}" "${TOOLCHAIN_DIR}/${CLANG_REVISION}"
-        rm -rf _temp_clang_clone
+        # Extract the toolchain
+        mkdir -p "${TOOLCHAIN_DIR}/${CLANG_REVISION}"
+        tar -xzf "${CLANG_REVISION}.tar.gz" -C "${TOOLCHAIN_DIR}/${CLANG_REVISION}"
+        rm "${CLANG_REVISION}.tar.gz"
         
         echo "✅ Clang toolchain ${CLANG_REVISION} downloaded successfully."
 
