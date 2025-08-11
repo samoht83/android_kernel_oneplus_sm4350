@@ -11,7 +11,7 @@ on:
       stock_boot_url:
         description: 'URL to the stock boot.img for repacking'
         required: true
-        default: 'https://github.com/example/stock_boot.img'
+        default: 'https://github.com/username/repo/releases/download/tag/boot.img'
         type: string
 
 jobs:
@@ -26,28 +26,28 @@ jobs:
     - name: Checkout kernel source
       uses: actions/checkout@v4
 
-    # -----------------
     # Cache Clang
-    # -----------------
     - name: Cache Clang Toolchain
       id: clang-cache
       uses: actions/cache@v4
       with:
-        path: clang
-        key: clang-aosp-14.0.6
+        path: toolchain/linux-x86/clang-r450784d
+        key: clang-r450784d
 
     - name: Download Clang Toolchain
       if: steps.clang-cache.outputs.cache-hit != 'true'
       run: |
-        echo "Downloading Clang from Google's AOSP mirror..."
-        mkdir -p clang
-        curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz
-        tar -C clang -xzf clang-r450784d.tar.gz
-        rm clang-r450784d.tar.gz
+        echo "Downloading Clang 14 prebuilts..."
+        mkdir -p toolchain/linux-x86
+        curl -fSL --connect-timeout 30 --retry 3 --retry-delay 5 \
+          "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz" \
+          -o clang.tar.gz
+        mkdir -p toolchain/linux-x86/clang-r450784d
+        tar -xzf clang.tar.gz -C toolchain/linux-x86/clang-r450784d
+        rm clang.tar.gz
+        echo "✅ Clang extracted successfully"
 
-    # -----------------
     # Cache KernelSU
-    # -----------------
     - name: Cache KernelSU
       id: kernelsu-cache
       uses: actions/cache@v4
@@ -63,47 +63,88 @@ jobs:
           https://github.com/tiann/KernelSU.git KernelSU
         echo "✅ KernelSU downloaded successfully"
 
-    # -----------------
+    # Install dependencies
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file llvm-18-tools zip
+
+    # Set environment variables
+    - name: Setup environment variables
+      run: |
+        echo "$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r450784d/bin" >> $GITHUB_PATH
+        echo "ARCH=arm64" >> $GITHUB_ENV
+        echo "SUBARCH=arm64" >> $GITHUB_ENV
+        echo "LLVM=1" >> $GITHUB_ENV
+        echo "LLVM_IAS=1" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+
+    # Integrate KernelSU & patch config
+    - name: Integrate KernelSU and patch defconfig
+      run: |
+        set -euo pipefail
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ github.event.inputs.kernelsu_version }}"
+        cat >> arch/arm64/configs/n200_defconfig <<'EOF'
+# KernelSU Requirements
+CONFIG_KPROBES=y
+CONFIG_HAVE_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+CONFIG_OVERLAY_FS=y
+CONFIG_KERNELSU=y
+# Patch for build errors
+# CONFIG_RMNET is not set
+EOF
+        mkdir -p drivers/misc
+        cat > drivers/misc/oplus_stubs.c <<'EOC'
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/errno.h>
+
+void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
+    pr_err("STUB: qcom_smem_get called\n");
+    if (size) *size = 0;
+    return ERR_PTR(-ENOENT);
+}
+EXPORT_SYMBOL(qcom_smem_get);
+
+int get_project(void) {
+    pr_warn("STUB: get_project called, returning default\n");
+    return 21000;
+}
+EXPORT_SYMBOL(get_project);
+EOC
+        echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
+
     # Build Kernel
-    # -----------------
     - name: Build Kernel
       run: |
-        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
-        make O=out ARCH=arm64 vendor/holi_defconfig
-        make -j$(nproc) O=out ARCH=arm64 \
-          CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        make O=out n200_defconfig
+        make -j$(nproc) O=out
 
-    # -----------------
-    # Download Stock Boot Image
-    # -----------------
+    # Cache stock boot.img
     - name: Cache Stock Boot Image
-      id: boot-cache
+      id: stockboot-cache
       uses: actions/cache@v4
       with:
         path: stock_boot.img
         key: stockboot-${{ github.event.inputs.stock_boot_url }}
 
-    - name: Download Stock Boot
-      if: steps.boot-cache.outputs.cache-hit != 'true'
+    - name: Download Stock Boot Image
+      if: steps.stockboot-cache.outputs.cache-hit != 'true'
       run: |
-        curl -L ${{ github.event.inputs.stock_boot_url }} -o stock_boot.img
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-    # -----------------
-    # Repack with AnyKernel3
-    # -----------------
-    - name: Repack Boot Image
+    # Repack boot image with AnyKernel3
+    - name: Repack Boot Image with AnyKernel3
       run: |
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
         cp out/arch/arm64/boot/Image AnyKernel3/
         cd AnyKernel3
         zip -r9 ../KernelSU_kernel.zip *
         cd ..
-        echo "✅ Repacked KernelSU kernel zip created"
 
-    # -----------------
-    # Upload Build Artifacts
-    # -----------------
-    - name: Upload Kernel Zip
+    # Upload flashable zip artifact
+    - name: Upload KernelSU Kernel Zip
       uses: actions/upload-artifact@v4
       with:
         name: KernelSU_kernel
