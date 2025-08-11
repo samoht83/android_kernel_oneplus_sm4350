@@ -67,7 +67,6 @@ jobs:
         git clone https://github.com/tiann/KernelSU.git kernelsu
         cd kernelsu
         git checkout ${{ github.event.inputs.kernelsu_version }}
-        # The setup script needs to be executable
         chmod +x setup.sh
         ./setup.sh ../
 
@@ -96,17 +95,15 @@ jobs:
 
     - name: Repack boot image with new Kernel
       run: |
-        mkdir stock_boot_unpacked
-        ./magiskboot unpack stock_boot.img stock_boot_unpacked
-        cp kernel/out/arch/arm64/boot/Image stock_boot_unpacked/kernel
-        ./magiskboot repack stock_boot_unpacked new_boot.img
+        # Create a dedicated directory for unpacking to keep the workspace clean.
+        mkdir unpacked_boot
+        cd unpacked_boot
 
-    - name: Set artifact name
-      id: artifact_name
-      run: echo "name=boot-KSU-${{ github.event.inputs.kernelsu_version }}-${{ github.event.inputs.kernel_repo_branch }}.img" >> $GITHUB_OUTPUT
+        # Unpack the stock image located in the parent directory.
+        # This will create files like 'kernel', 'ramdisk.cpio', etc., inside the current 'unpacked_boot' directory.
+        ../magiskboot unpack ../stock_boot.img
 
-    - name: Upload repacked boot.img
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.artifact_name.outputs.name }}
-        path: new_boot.img
+        # Copy the newly built kernel image, overwriting the original one.
+        # NOTE: The kernel image with an embedded device tree is typically named 'Image.gz-dtb' or 'Image-dtb'.
+        # This path is the most common output location.
+        cp ../kernel/out/arch
