@@ -11,40 +11,44 @@ on:
       stock_boot_url:
         description: 'URL to the stock boot.img for repacking'
         required: true
-        default: 'https://github.com/username/repo/releases/download/tag/boot.img'
+        default: 'https://github.com/example/stock_boot.img'
         type: string
 
 jobs:
   build:
-    name: Build by ${{ github.actor }}
     runs-on: ubuntu-22.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-    steps:
-    - uses: actions/checkout@v4
 
-    # Cache Clang Toolchain
+    steps:
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+
+    # -----------------
+    # Cache Clang
+    # -----------------
     - name: Cache Clang Toolchain
       id: clang-cache
       uses: actions/cache@v4
       with:
-        path: toolchain/linux-x86/clang
-        key: clang-r450784d
+        path: clang
+        key: clang-aosp-14.0.6
 
     - name: Download Clang Toolchain
       if: steps.clang-cache.outputs.cache-hit != 'true'
       run: |
         echo "Downloading Clang from Google's AOSP mirror..."
-        mkdir -p toolchain/linux-x86/clang
-        curl -fSL --connect-timeout 30 --retry 3 --retry-delay 5 \
-          "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz" \
-          | tar -xz -C toolchain/linux-x86/clang
-        echo "✅ Clang extracted successfully"
+        mkdir -p clang
+        curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz
+        tar -C clang -xzf clang-r450784d.tar.gz
+        rm clang-r450784d.tar.gz
 
+    # -----------------
     # Cache KernelSU
-    - name: Cache KernelSU Source
+    # -----------------
+    - name: Cache KernelSU
       id: kernelsu-cache
       uses: actions/cache@v4
       with:
@@ -54,51 +58,53 @@ jobs:
     - name: Download KernelSU
       if: steps.kernelsu-cache.outputs.cache-hit != 'true'
       run: |
-        echo "Cloning KernelSU ${{ github.event.inputs.kernelsu_version }}..."
-        git clone --depth=1 --branch "${{ github.event.inputs.kernelsu_version }}" \
+        echo "Downloading KernelSU ${{ github.event.inputs.kernelsu_version }}..."
+        git clone --depth=1 --branch ${{ github.event.inputs.kernelsu_version }} \
           https://github.com/tiann/KernelSU.git KernelSU
-        echo "✅ KernelSU cloned successfully"
+        echo "✅ KernelSU downloaded successfully"
 
-    # Prepare environment
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ccache libncurses-dev flex bison libssl-dev \
-          lz4 wget git python3 unzip curl axel tar
-
+    # -----------------
     # Build Kernel
-    - name: Build Kernel with KernelSU
+    # -----------------
+    - name: Build Kernel
       run: |
-        export PATH=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin:$PATH
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CC=clang
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export CROSS_COMPILE=aarch64-linux-gnu-
-        export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-        make O=out vendor/holi-qgki_defconfig
-        echo "Applying KernelSU..."
-        cp -r KernelSU/* .
-        make O=out -j$(nproc)
+        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
+        make O=out ARCH=arm64 vendor/holi_defconfig
+        make -j$(nproc) O=out ARCH=arm64 \
+          CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-    # Download stock boot.img
+    # -----------------
+    # Download Stock Boot Image
+    # -----------------
+    - name: Cache Stock Boot Image
+      id: boot-cache
+      uses: actions/cache@v4
+      with:
+        path: stock_boot.img
+        key: stockboot-${{ github.event.inputs.stock_boot_url }}
+
     - name: Download Stock Boot
+      if: steps.boot-cache.outputs.cache-hit != 'true'
       run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+        curl -L ${{ github.event.inputs.stock_boot_url }} -o stock_boot.img
 
-    # Unpack and Repack Boot Image
-    - name: Repack Boot with New Kernel
+    # -----------------
+    # Repack with AnyKernel3
+    # -----------------
+    - name: Repack Boot Image
       run: |
-        git clone https://github.com/osm0sis/mkbootimg.git
-        mkdir repack
-        python3 mkbootimg/unpackbootimg.py --boot_img stock_boot.img --out repack
-        cp out/arch/arm64/boot/Image.gz-dtb repack/kernel
-        python3 mkbootimg/mkbootimg.py $(cat repack/unpack_info.txt) \
-          --kernel repack/kernel -o new_boot.img
+        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+        cp out/arch/arm64/boot/Image AnyKernel3/
+        cd AnyKernel3
+        zip -r9 ../KernelSU_kernel.zip *
+        cd ..
+        echo "✅ Repacked KernelSU kernel zip created"
 
-    # Upload Result
-    - name: Upload New Boot Image
+    # -----------------
+    # Upload Build Artifacts
+    # -----------------
+    - name: Upload Kernel Zip
       uses: actions/upload-artifact@v4
       with:
-        name: new_boot.img
-        path: new_boot.img
+        name: KernelSU_kernel
+        path: KernelSU_kernel.zip
