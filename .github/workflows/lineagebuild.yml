@@ -1,4 +1,4 @@
-name: Build KernelSU-next Kernel and Repack Boot Image
+name: Build KernelSU-Next Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
@@ -6,11 +6,11 @@ on:
       stock_boot_url:
         description: 'URL to the stock boot.img for repacking'
         required: true
-        type: string
-        default: 'https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/55c73263178dda755db0a217037d4e59c12c24aa/stock/original_boot.img'
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/55c73263178dda755db0a217037d4e59c12c24aa/stock/original_boot.img'
 
 jobs:
   build:
+    name: Build KernelSU-Next by ${{ github.actor }}
     runs-on: ubuntu-22.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -20,103 +20,72 @@ jobs:
       CCACHE_HARDLINK: "true"
 
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
-      with:
-        repository: 'samoht83/android_kernel_oneplus_sm4350'
-        ref: 'lineage-22.2'
-        path: kernel
+    - uses: actions/checkout@v4
 
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu jq abootimg
-        curl -L -o mkbootimg https://github.com/danielguerra69/mkbootimg/releases/download/v3.10/mkbootimg
-        chmod +x mkbootimg
+        sudo apt-get install -y git ccache curl unzip python3
 
-    - name: Restore ccache
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.CCACHE_DIR }}
-        key: ccache-${{ github.workflow }}
-        restore-keys: |
-          ccache-
-
-    - name: Restore Clang cache
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.CLANG_CACHE_DIR }}
-        key: clang-${{ env.CLANG_CACHE_DIR }}-v1
-
-    - name: Download and install Clang (if missing)
+    - name: Setup ccache
       run: |
-        CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-armv7a-linux-gnueabihf.tar.gz"
-        if [ ! -d "${{ env.CLANG_CACHE_DIR }}/bin" ]; then
-          mkdir -p "${{ env.CLANG_CACHE_DIR }}"
-          curl -L "$CLANG_URL" | tar -xz --strip-components=0 -C "${{ env.CLANG_CACHE_DIR }}"
-        fi
-        echo "${{ env.CLANG_CACHE_DIR }}/bin" >> $GITHUB_PATH
-        clang --version
+        ccache --max-size=5G
+        ccache --show-stats || true
 
-    - name: Download Android GCC 4.9 prebuilts
+    - name: Download and extract Clang
       run: |
-        if [ ! -d "$HOME/aarch64-gcc/bin" ]; then
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $HOME/aarch64-gcc
-        fi
-        echo "$HOME/aarch64-gcc/bin" >> $GITHUB_PATH
+        mkdir -p $CLANG_CACHE_DIR
+        curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-armv7a-linux-gnueabihf.tar.gz \
+          | tar -xz -C $CLANG_CACHE_DIR --strip-components=1
+        echo "$CLANG_CACHE_DIR/bin" >> $GITHUB_PATH
 
-    - name: Setup KernelSU-next via official setup.sh
+    - name: Setup KernelSU-Next
       run: |
-        cd kernel
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-    - name: Ensure CONFIG_KSU in defconfig
+    - name: Download magiskboot
       run: |
-        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
-        if [ -n "$DEFCONFIG" ]; then
-          if ! grep -q "^CONFIG_KSU=y" "$DEFCONFIG"; then
-            echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-            echo "Added CONFIG_KSU=y to $DEFCONFIG"
-          else
-            echo "CONFIG_KSU already present in $DEFCONFIG"
-          fi
-        else
-          echo "holi defconfig not found; aborting"
-          exit 1
-        fi
+        curl -LO https://raw.githubusercontent.com/topjohnwu/magiskboot/main/magiskboot
+        chmod +x magiskboot
 
     - name: Download stock boot.img
       run: |
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-    - name: Unpack stock boot.img with abootimg
+    - name: Unpack stock boot.img
       run: |
-        mkdir unpacked
-        abootimg -x stock_boot.img
-        mv boot.img-* unpacked/
-        ls -la unpacked
+        mkdir stock_boot
+        ./magiskboot unpack stock_boot.img -o stock_boot
+        ls -la stock_boot
 
-    - name: Replace kernel in unpacked boot folder
+    - name: Build Kernel
       run: |
-        cp kernel/out/arch/arm64/boot/Image.gz-dtb unpacked/zImage
-        ls -la unpacked/
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export PATH="$CLANG_CACHE_DIR/bin:$PATH"
+        make O=out vendor/holi-qgki_defconfig
+        make -j$(nproc) O=out \
+          CC=clang \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          LD=ld.lld
 
-    - name: Repack boot.img with mkbootimg
+    - name: Replace kernel in unpacked boot
       run: |
-        ./mkbootimg \
-          --kernel unpacked/zImage \
-          --ramdisk unpacked/initrd.img \
-          --cmdline "$(cat unpacked/bootimg.cmdline)" \
-          --base 0x10000000 \
-          --pagesize 4096 \
-          -o boot_kernelsu_next.img
+        cp out/arch/arm64/boot/Image.gz-dtb stock_boot/
 
-    - name: Upload KernelSU-next boot.img
+    - name: Repack boot.img with magiskboot
+      run: |
+        ./magiskboot repack stock_boot -o boot_kernelsu_next.img
+        ls -lh boot_kernelsu_next.img
+
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: boot_kernelsu_next.img
+        name: boot_kernelsu_next
         path: boot_kernelsu_next.img
-
-    - name: Show ccache stats
-      run: |
-        ccache --show-stats
