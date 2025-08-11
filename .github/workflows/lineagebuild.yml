@@ -1,76 +1,84 @@
-name: Build LineageOS Boot Image with KernelSU v0.9.5
+name: Build KernelSU Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
+    inputs:
+      stock_boot_url:
+        description: 'URL to stock boot.img'
+        required: true
+        type: string
+        default: https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/lineage-22.2/stock/original_boot.img
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
+    env:
+      KERNEL_REPO: https://github.com/LineageOS/android_kernel_oneplus_sm4350.git
+      KERNEL_BRANCH: lineage-22.2
+      KERNELSU_TAG: v0.9.5
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz
+
     steps:
-    - name: Checkout workflow repo
-      uses: actions/checkout@v4
-
-    - name: Install build dependencies
+    - name: Checkout Kernel source
       run: |
-        sudo apt-get update
-        sudo apt-get install -y bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick \
-          lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
-          libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
-          openjdk-11-jdk python-is-python3 ccache
+        git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
 
-    - name: Install repo tool
+    - name: Download and extract Clang 14 toolchain
       run: |
-        sudo curl -o /usr/local/bin/repo https://storage.googleapis.com/git-repo-downloads/repo
-        sudo chmod a+x /usr/local/bin/repo
+        curl -L $CLANG_URL | tar -xJ -C $HOME
+        export PATH=$HOME/clang-r450784d/bin:$PATH
+        clang --version
 
-    - name: Set up ccache
+    - name: Clone KernelSU and setup
       run: |
-        export USE_CCACHE=1
-        export CCACHE_EXEC=$(which ccache)
-        ccache -M 50G
-
-    - name: Repo init LineageOS source
-      run: |
-        mkdir -p ~/android/lineage
-        cd ~/android/lineage
-        repo init -u https://github.com/LineageOS/android.git -b lineage-22.2 --git-lfs --no-clone-bundle
-
-    - name: Repo sync
-      run: |
-        cd ~/android/lineage
-        repo sync -j$(nproc) --force-sync --no-clone-bundle --no-tags
-
-    - name: Setup environment
-      run: |
-        cd ~/android/lineage
-        source build/envsetup.sh
-        breakfast dre
-
-    - name: Integrate KernelSU v0.9.5
-      run: |
-        cd ~/android/lineage/kernel/oneplus/sm4350
+        cd kernel
         git clone https://github.com/tiann/KernelSU.git kernelsu
         cd kernelsu
-        git checkout v0.9.5
+        git checkout ${{ env.KERNELSU_TAG }}
         ./setup.sh ../
 
-        DEFCONFIG=$(find ../arch/arm64/configs -name "*holi*_defconfig" | head -n 1)
+    - name: Enable KernelSU in defconfig
+      run: |
+        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
         if [ -n "$DEFCONFIG" ]; then
           echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+          echo "KernelSU enabled in $DEFCONFIG"
         else
-          echo "Warning: Could not find holi defconfig!"
+          echo "holi defconfig not found!"
+          exit 1
         fi
 
-    - name: Build bootimage
+    - name: Download stock boot.img
       run: |
-        cd ~/android/lineage
-        source build/envsetup.sh
-        breakfast dre
-        mka bootimage
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-    - name: Upload boot.img
+    - name: Build kernel
+      run: |
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-android-
+        export PATH=$HOME/clang-r450784d/bin:$PATH
+        cd kernel
+        make O=out holi_defconfig
+        make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+
+    - name: Download magiskboot tool
+      run: |
+        curl -LO https://raw.githubusercontent.com/topjohnwu/magiskboot/main/magiskboot
+        chmod +x magiskboot
+
+    - name: Extract stock boot.img
+      run: |
+        mkdir stock_boot
+        ./magiskboot unpack stock_boot.img -o stock_boot
+
+    - name: Replace kernel in boot.img
+      run: |
+        cp kernel/out/Image.gz-dtb stock_boot/
+        ./magiskboot repack stock_boot -o boot.img
+
+    - name: Upload repacked boot.img
       uses: actions/upload-artifact@v4
       with:
-        name: boot-kernelsu-v0.9.5
-        path: ~/android/lineage/out/target/product/dre/boot.img
+        name: kernelsu-boot.img
+        path: boot.img
