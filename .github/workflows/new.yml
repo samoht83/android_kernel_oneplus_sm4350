@@ -36,13 +36,21 @@ jobs:
           ccache -M 10G
           ccache -s
 
-      - name: Download Clang 14 Toolchain
+      - name: Cache Clang Toolchain
+        uses: actions/cache@v3
+        with:
+        path: ~/toolchain
+        key: clang-toolchain-android-14-r450784d
+
+      - name: Download Clang 14 Toolchain (if not cached)
         run: |
-          mkdir -p ~/toolchain
-          cd ~/toolchain
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784e.tar.xz
-          tar -xf clang-r450784e.tar.xz
-          echo "$HOME/toolchain/clang-r450784e/bin" >> $GITHUB_PATH
+    if [ ! -d "$HOME/toolchain/clang-r450784d" ]; then
+      mkdir -p ~/toolchain
+      cd ~/toolchain
+      wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz
+      tar -xzf clang-r450784d.tar.gz
+    fi
+    echo "$HOME/toolchain/clang-r450784d/bin" >> $GITHUB_PATH
 
       - name: Clone KernelSU
         run: |
