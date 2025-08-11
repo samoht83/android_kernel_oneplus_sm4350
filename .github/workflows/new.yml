@@ -1,5 +1,4 @@
-# A more descriptive name for the workflow
-name: Build KernelSU Kernel and Create Flashable Zip
+name: Build KernelSU Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
@@ -9,158 +8,194 @@ on:
         required: true
         default: 'v0.9.5'
         type: string
-      # NOTE: Removed stock_boot_url as it was unused. AnyKernel3 patches the
-      # boot image on the device itself, it does not need a stock image during build.
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://github.com/samoht83/android_kernel_oneplus_sm4350/blob/lineage-22.2/stock/original_boot.img?raw=true'
+        type: string
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
-    env:
-      # Environment variables for ccache
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-
+    runs-on: ubuntu-latest
     steps:
-    # Step 1: Checkout your kernel source repository
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # Step 2: Set up the Clang Toolchain
-    - name: Cache Clang Toolchain
-      id: clang-cache
-      uses: actions/cache@v4
-      with:
-        path: toolchain/linux-x86/clang-r450784d
-        # Use a versioned key to ensure the correct content is cached
-        key: clang-r450784d-v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld
 
-    - name: Download Clang Toolchain
-      if: steps.clang-cache.outputs.cache-hit != 'true'
-      run: |
-        set -e # Exit immediately on any error
-        echo "Downloading Clang 14 prebuilts from AOSP Git..."
-        TOOLCHAIN_DIR="toolchain/linux-x86"
-        CLANG_REVISION="clang-r450784d"
-        
-        mkdir -p "${TOOLCHAIN_DIR}"
-        
-        # FIX: Use direct download from AOSP prebuilts instead of git clone
-        # This is more reliable and faster than cloning the entire repository
-        echo "Downloading prebuilt Clang toolchain..."
-        wget -q --show-progress \
-          "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/main/${CLANG_REVISION}.tar.gz" \
-          -O "${CLANG_REVISION}.tar.gz"
-        
-        # Extract the toolchain
-        mkdir -p "${TOOLCHAIN_DIR}/${CLANG_REVISION}"
-        tar -xzf "${CLANG_REVISION}.tar.gz" -C "${TOOLCHAIN_DIR}/${CLANG_REVISION}"
-        rm "${CLANG_REVISION}.tar.gz"
-        
-        echo "✅ Clang toolchain ${CLANG_REVISION} downloaded successfully."
+      - name: Cache Clang Toolchain
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: toolchain/linux-x86/clang
+          key: ${{ runner.os }}-clang-18-v2
+          restore-keys: |
+            ${{ runner.os }}-clang-18-
 
-    # Step 3: Set up KernelSU Source
-    - name: Cache KernelSU Source
-      id: kernelsu-cache
-      uses: actions/cache@v4
-      with:
-        path: KernelSU
-        key: kernelsu-${{ github.event.inputs.kernelsu_version }}
+      - name: Download and Extract Clang Toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchain/linux-x86
+          cd toolchain/linux-x86
+          
+          PRIMARY_URL="https://github.com/Its-Vichy/prebuilt-linux-x86-clang/releases/download/510928/clang-r510928.tar.gz"
+          FALLBACK_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz"
+          
+          echo "Attempting primary Clang download..."
+          if wget --spider "$PRIMARY_URL" 2>/dev/null; then
+            wget "$PRIMARY_URL"
+            if file clang-r510928.tar.gz | grep -q 'gzip compressed data'; then
+              tar -xzf clang-r510928.tar.gz
+              mv clang-r510928 clang
+              rm clang-r510928.tar.gz
+            else
+              echo "Invalid gzip archive!"
+              exit 1
+            fi
+          else
+            echo "Primary URL failed — trying LLVM fallback..."
+            if wget "$FALLBACK_URL"; then
+              if file clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz | grep -q 'XZ compressed data'; then
+                tar -xf clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+                mv clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04 clang
+                rm clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-22.04.tar.xz
+              else
+                echo "Invalid XZ archive — using system Clang."
+                mkdir -p clang/bin
+                sudo apt-get install -y clang-18 lld-18
+                ln -s /usr/bin/clang-18 clang/bin/clang
+                ln -s /usr/bin/clang++-18 clang/bin/clang++
+                ln -s /usr/bin/ld.lld-18 clang/bin/ld.lld
+                ln -s /usr/bin/llvm-ar-18 clang/bin/llvm-ar
+                ln -s /usr/bin/llvm-nm-18 clang/bin/llvm-nm
+                ln -s /usr/bin/llvm-objdump-18 clang/bin/llvm-objdump
+                ln -s /usr/bin/llvm-strip-18 clang/bin/llvm-strip
+              fi
+            fi
+          fi
+          chmod +x clang/bin/* 2>/dev/null || true
 
-    - name: Download KernelSU Source
-      if: steps.kernelsu-cache.outputs.cache-hit != 'true'
-      run: |
-        echo "Downloading KernelSU ${{ github.event.inputs.kernelsu_version }}..."
-        git clone --depth=1 --branch ${{ github.event.inputs.kernelsu_version }} \
-          https://github.com/tiann/KernelSU.git KernelSU
-        echo "✅ KernelSU downloaded successfully"
+      - name: Set up Environment
+        run: |
+          CLANG_BIN=$GITHUB_WORKSPACE/toolchain/linux-x86/clang/bin
+          echo "$CLANG_BIN" >> $GITHUB_PATH
+          echo "CLANG_BIN=$CLANG_BIN" >> $GITHUB_ENV
+          echo "LD=$CLANG_BIN/ld.lld" >> $GITHUB_ENV
+          echo "AR=$CLANG_BIN/llvm-ar" >> $GITHUB_ENV
+          echo "NM=$CLANG_BIN/llvm-nm" >> $GITHUB_ENV
+          echo "OBJDUMP=$CLANG_BIN/llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=$CLANG_BIN/llvm-strip" >> $GITHUB_ENV
+          echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "SUBARCH=arm64" >> $GITHUB_ENV
+          echo "LLVM=1" >> $GITHUB_ENV
+          echo "LLVM_IAS=1" >> $GITHUB_ENV
 
-    # Step 4: Install System Dependencies
-    - name: Install Build Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          bc bison build-essential cpio curl flex git \
-          libssl-dev libelf-dev libncurses-dev python3 \
-          unzip xz-utils lld wget file zip
+      - name: Debug Clang toolchain files
+        run: |
+          echo "Listing clang/bin contents:"
+          ls -la "$CLANG_BIN" || true
 
-    # Step 5: Configure the Build Environment
-    - name: Setup Build Environment
-      run: |
-        echo "Setting up environment variables..."
-        # Add the downloaded Clang toolchain's bin directory to the system PATH
-        echo "$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r450784d/bin" >> $GITHUB_PATH
-        
-        # Set Kbuild environment variables for an ARM64 Clang (LLVM) build
-        echo "ARCH=arm64" >> $GITHUB_ENV
-        echo "SUBARCH=arm64" >> $GITHUB_ENV
-        echo "LLVM=1" >> $GITHUB_ENV
-        echo "LLVM_IAS=1" >> $GITHUB_ENV
-        echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-        echo "✅ Environment configured."
+      - name: Set up GCC Cross-Compiler
+        run: |
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc
+          echo "$GITHUB_WORKSPACE/gcc/bin" >> $GITHUB_PATH
 
-    # Step 6: Integrate KernelSU and Apply Kernel-Specific Patches
-    - name: Integrate KernelSU and Apply Patches
-      run: |
-        set -euo pipefail
-        echo "Integrating KernelSU..."
-        # FIX: Use the setup script from the *locally cloned* KernelSU version.
-        # This ensures compatibility between the script and the source code.
-        # This script also correctly patches the defconfig, so the manual patch is removed.
-        bash KernelSU/kernel/setup.sh
+      - name: Clone and Set Up KernelSU
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ inputs.kernelsu_version }}
+          tee -a arch/arm64/configs/n200_defconfig > /dev/null <<EOF
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_KERNELSU=y
+          CONFIG_KERNELSU_MODULE_SEPARATED=y
+          CONFIG_MODULES=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_ELFCORE=y
+          CONFIG_PROC_FS=y
+          CONFIG_TMPFS=y
+          EOF
 
-        echo "Applying kernel-specific workarounds for n200..."
-        # This stub is required to fix build errors related to missing symbols
-        # (qcom_smem_get, get_project) in this specific kernel source.
-        mkdir -p drivers/misc
-        cat > drivers/misc/oplus_stubs.c <<'EOC'
-        #include <linux/module.h>
-        #include <linux/kernel.h>
-        #include <linux/errno.h>
+      - name: Remove duplicate Oplus stub objects (auto-detect)
+        run: |
+          set -euo pipefail
+          STUB_MF="drivers/misc/Makefile"
+          if [ -f "$STUB_MF" ]; then
+            echo "Scanning for Oplus stub objects to remove..."
+            STUBS=$(grep -oE '[^ ]*oplus[^ ]*stubs[^ ]*\.o' "$STUB_MF" || true)
+            if [ -n "$STUBS" ]; then
+              echo "Found stubs: $STUBS"
+              for STUB in $STUBS; do
+                echo "Removing $STUB from $STUB_MF..."
+                sed -i "\|$STUB|d" "$STUB_MF"
+              done
+            else
+              echo "No Oplus stubs found in $STUB_MF."
+            fi
+          fi
 
-        void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
-            pr_err("STUB: qcom_smem_get called\n");
-            if (size) *size = 0;
-            return ERR_PTR(-ENOENT);
-        }
-        EXPORT_SYMBOL(qcom_smem_get);
+      - name: Fix missing sensor_proc_dir symbol (safe)
+        run: |
+          set -euo pipefail
+          DEF_FILE=$(grep -R --line-number --no-messages "^[[:space:]]*struct[[:space:]]\\+proc_dir_entry[[:space:]]\\+\\*sensor_proc_dir" -n soc || true)
+          if [ -z "$DEF_FILE" ]; then
+            mkdir -p drivers/misc
+            cat > drivers/misc/sensor_proc_stub.c <<'EOF'
+#include <linux/proc_fs.h>
+struct proc_dir_entry *sensor_proc_dir;
+EXPORT_SYMBOL(sensor_proc_dir);
+EOF
+            echo "obj-y += sensor_proc_stub.o" >> drivers/misc/Makefile
+          else
+            echo "Found real definition — enabling CONFIG_OPLUS_SENSOR_DEVINFO"
+            echo "CONFIG_OPLUS_SENSOR_DEVINFO=y" >> arch/arm64/configs/n200_defconfig
+          fi
 
-        int get_project(void) {
-            pr_warn("STUB: get_project called, returning default\n");
-            return 21000;
-        }
-        EXPORT_SYMBOL(get_project);
-        EOC
-        echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
-        echo "✅ Integration and patching complete."
+      - name: Build Kernel
+        run: |
+          make O=out ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            n200_defconfig
+          
+          make O=out ARCH=arm64 SUBARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CC=$CLANG_BIN/clang LD=$CLANG_BIN/ld.lld AR=$CLANG_BIN/llvm-ar \
+            NM=$CLANG_BIN/llvm-nm OBJDUMP=$CLANG_BIN/llvm-objdump \
+            STRIP=$CLANG_BIN/llvm-strip OBJCOPY=$CLANG_BIN/llvm-objcopy \
+            CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            -j$(nproc)
 
-    # Step 7: Build the Kernel
-    - name: Build Kernel
-      run: |
-        make O=out n200_defconfig
-        make -j$(nproc) O=out
+      - name: Download Stock Boot Image
+        run: |
+          wget -O stock_boot.img "${{ inputs.stock_boot_url }}"
 
-    # Step 8: Package into a Flashable Zip using AnyKernel3
-    - name: Package with AnyKernel3
-      run: |
-        echo "Cloning AnyKernel3 template..."
-        git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-        
-        echo "Copying compiled kernel image to AnyKernel3 directory..."
-        cp out/arch/arm64/boot/Image AnyKernel3/
-        
-        echo "Creating flashable zip..."
-        cd AnyKernel3
-        # Create a zip archive, excluding the .git directory for a cleaner package
-        zip -r9 ../KernelSU-n200-${{ github.event.inputs.kernelsu_version }}.zip ./* -x ".git/*"
-        cd ..
-        echo "✅ Flashable zip created."
+      - name: Install AIK (Android Image Kitchen)
+        run: |
+          wget https://github.com/osm0sis/AIK-Linux/archive/master.zip
+          unzip -q master.zip
+          mv AIK-Linux-master AIK
+          chmod +x AIK/*.sh
 
-    # Step 9: Upload the Flashable Zip as an Artifact
-    - name: Upload Flashable Zip
-      uses: actions/upload-artifact@v4
-      with:
-        # Use a more descriptive artifact name
-        name: KernelSU-n200-${{ github.event.inputs.kernelsu_version }}
-        path: KernelSU-n200-${{ github.event.inputs.kernelsu_version }}.zip
+      - name: Unpack and Repack Boot Image
+        run: |
+          cd AIK
+          ./unpackimg.sh ../stock_boot.img
+          cp ../out/arch/arm64/boot/Image split_img/stock_boot.img-kernel
+          ./repackimg.sh
+          mv image-new.img ../kernelsu_boot.img
 
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-build-${{ inputs.kernelsu_version }}-${{ github.run_number }}
+          path: |
+            out/arch/arm64/boot/Image
+            kernelsu_boot.img
+            arch/arm64/configs/n200_defconfig
+            out/.config
+          retention-days: 30
