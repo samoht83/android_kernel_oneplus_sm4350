@@ -3,118 +3,99 @@ name: Build KernelSU Kernel and Repack Boot Image
 on:
   workflow_dispatch:
     inputs:
-      stock_boot_url:
-        description: 'URL to stock boot.img'
-        required: true
-        type: string
-        default: 'https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/lineage-22.2/stock/original_boot.img'
-      kernel_repo_url:
-        description: 'Kernel Git repository URL'
-        required: true
-        type: string
-        default: 'https://github.com/LineageOS/android_kernel_oneplus_sm4350.git'
-      kernel_repo_branch:
-        description: 'Kernel repository branch'
-        required: true
-        type: string
-        default: 'lineage-22.2'
       kernelsu_version:
-        description: 'KernelSU Git tag (e.g., v0.9.5)'
+        description: 'KernelSU version tag (e.g., v0.9.5)'
         required: true
-        type: string
         default: 'v0.9.5'
+        type: string
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://github.com/example/boot.img'
+        type: string
 
 jobs:
   build:
+    name: Build Kernel by ${{ github.actor }}
     runs-on: ubuntu-22.04
-
     env:
-      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz
-      CLANG_DIR: ${{ runner.temp }}/clang
-      CLANG_VERSION: clang-r450784d
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_MAXSIZE: "3G"
 
     steps:
-    - name: Verify input URLs
+    # Checkout your kernel source
+    - uses: actions/checkout@v4
+
+    # Free disk space before starting
+    - name: Free up disk space
       run: |
-        set -e
-        curl --head --fail "${{ github.event.inputs.stock_boot_url }}" || (echo "Invalid stock_boot_url" && exit 1)
-        git ls-remote "${{ github.event.inputs.kernel_repo_url }}" &> /dev/null || (echo "Invalid kernel_repo_url" && exit 1)
+        echo "Cleaning up preinstalled software to free space..."
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        sudo apt-get clean
+        docker system prune -af || true
+        df -h
 
-    - name: Checkout Kernel source
-      uses: actions/checkout@v4
-      with:
-        repository: ${{ github.event.inputs.kernel_repo_url }}
-        path: kernel
-        ref: ${{ github.event.inputs.kernel_repo_branch }}
-        fetch-depth: 1
-
-    - name: Cache Clang Toolchain
-      id: cache-clang
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.CLANG_DIR }}
-        key: ${{ runner.os }}-clang-${{ env.CLANG_VERSION }}
-
-    - name: Download and extract Clang toolchain
-      if: steps.cache-clang.outputs.cache-hit != 'true'
+    # Install required packages
+    - name: Install dependencies
       run: |
-        mkdir -p ${{ env.CLANG_DIR }}
-        curl -L --retry 3 "${{ env.CLANG_URL }}" | tar -xz -C ${{ env.CLANG_DIR }}
+        sudo apt-get update
+        sudo apt-get install -y bc bison flex libssl-dev make gcc clang lld ccache curl unzip
 
-    - name: Add Clang to PATH
+    # Download Clang toolchain
+    - name: Download Clang Toolchain
       run: |
-        echo "${{ env.CLANG_DIR }}/${{ env.CLANG_VERSION }}/bin" >> $GITHUB_PATH
-        clang --version
+        mkdir -p ~/toolchain
+        curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz \
+          | tar -xz -C ~/toolchain
+        echo "$HOME/toolchain/clang-r450784d/bin" >> $GITHUB_PATH
 
-    - name: Clone KernelSU and setup
+    # Download KernelSU
+    - name: Download KernelSU
       run: |
-        cd kernel
-        git clone https://github.com/tiann/KernelSU.git kernelsu --depth 1
-        cd kernelsu
-        git checkout ${{ github.event.inputs.kernelsu_version }}
-        chmod +x setup.sh
-        ./setup.sh ../
+        git clone --depth=1 --branch ${{ github.event.inputs.kernelsu_version }} https://github.com/tiann/KernelSU.git kernelsu
+        cp -r kernelsu/kernel/* .
 
-    - name: Enable KernelSU in defconfig
+    # Prepare defconfig
+    - name: Set defconfig
       run: |
-        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
-        [ -n "$DEFCONFIG" ] && echo "CONFIG_KSU=y" >> "$DEFCONFIG" || (echo "Defconfig not found" && exit 1)
+        make O=out ARCH=arm64 vendor/holi_defconfig
 
-    - name: Compile Kernel
+    # Build kernel
+    - name: Build kernel
       run: |
-        cd kernel
-        make O=out ARCH=arm64 holi_defconfig
         make -j$(nproc) O=out ARCH=arm64 \
-          CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+          CC=clang \
+          LLVM=1 \
+          LLVM_IAS=1
 
-    - name: Cache Magiskboot
-      id: cache-magisk
-      uses: actions/cache@v4
+    # Download stock boot.img to /tmp (not workspace)
+    - name: Download stock boot.img
+      run: |
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o /tmp/boot.img
+
+    # Unpack & repack boot.img with new kernel
+    - name: Repack boot.img
+      run: |
+        git clone https://github.com/osm0sis/mkbootimg.git mkbootimg
+        git clone https://github.com/osm0sis/AnyKernel3.git anykernel
+        cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+        cd anykernel
+        zip -r9 ../KernelSU-${{ github.event.inputs.kernelsu_version }}.zip .
+
+    # Upload artifact
+    - uses: actions/upload-artifact@v4
       with:
-        path: magiskboot
-        key: magiskboot-v27
+        name: KernelSU-${{ github.event.inputs.kernelsu_version }}
+        path: KernelSU-${{ github.event.inputs.kernelsu_version }}.zip
 
-    - name: Download Magiskboot
-      if: steps.cache-magisk.outputs.cache-hit != 'true'
+    # Final cleanup
+    - name: Cleanup to avoid space issues
       run: |
-        curl -LO https://github.com/topjohnwu/Magisk/releases/download/v27.0/magiskboot
-        chmod +x magiskboot
-
-    - name: Download Stock Boot Image
-      run: |
-        curl -L --retry 3 "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
-
-    - name: Repack Boot Image with New Kernel
-      run: |
-        mkdir unpacked_boot
-        cd unpacked_boot
-        ../magiskboot unpack ../stock_boot.img
-        cp ../kernel/out/arch/arm64/boot/Image.gz-dtb kernel
-        ../magiskboot repack ../stock_boot.img
-        mv new-boot.img ../kernelsu_boot.img
-
-    - name: Upload KernelSU Boot Image
-      uses: actions/upload-artifact@v3
-      with:
-        name: kernelsu_boot
-        path: kernelsu_boot.img
+        rm -rf out/* kernelsu mkbootimg anykernel ~/toolchain /tmp/*
+        df -h
