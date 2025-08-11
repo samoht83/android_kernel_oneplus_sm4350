@@ -44,13 +44,12 @@ jobs:
 
       - name: Download Clang 14 Toolchain (if not cached)
         run: |
-          if [ ! -d "$HOME/toolchain/clang-r450784d" ]; then
-            mkdir -p ~/toolchain
-            cd ~/toolchain
-            wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz
-            tar -xzf clang-r450784d.tar.gz
-          fi
-          echo "$HOME/toolchain/clang-r450784d/bin" >> $GITHUB_PATH
+    if [ ! -d "$HOME/toolchain/.           clang-r450784d" ]; then
+      mkdir -p "$HOME/toolchain"
+      cd "$HOME/toolchain"
+      curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz | tar -xz
+    fi
+    echo "$HOME/toolchain/clang-r450784d/bin" >> $GITHUB_PATH
 
       - name: Clone KernelSU
         run: |
