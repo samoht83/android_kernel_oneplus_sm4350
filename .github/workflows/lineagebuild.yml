@@ -25,8 +25,10 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu jq build-essential python3-pip
-        
+        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu jq abootimg
+        # Download mkbootimg prebuilt binary
+        curl -L -o mkbootimg https://github.com/danielguerra69/mkbootimg/releases/download/v3.10/mkbootimg
+        chmod +x mkbootimg
 
     - name: Restore ccache
       uses: actions/cache@v4
@@ -62,12 +64,10 @@ jobs:
     - name: Clone kernel repo (shallow)
       run: |
         git clone --depth=1 --branch lineage-22.2 https://github.com/samoht83/android_kernel_oneplus_sm4350.git kernel
-        ls -la kernel
 
     - name: Clone KernelSU-next and apply
       run: |
         git clone --depth=1 https://github.com/tiann/KernelSU-next.git KernelSU-next
-        # kernel/ is the working kernel tree
         if [ -d "KernelSU-next/kernel" ]; then
           cp -r KernelSU-next/kernel/* kernel/
           if [ -f "KernelSU-next/kernel/patch.sh" ]; then
@@ -80,7 +80,7 @@ jobs:
           cp -r KernelSU-next/* kernel/ || true
         fi
 
-    - name: Ensure CONFIG_KSU in defconfig (only if missing)
+    - name: Ensure CONFIG_KSU in defconfig
       run: |
         DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
         if [ -n "$DEFCONFIG" ]; then
@@ -91,81 +91,42 @@ jobs:
             echo "CONFIG_KSU already present in $DEFCONFIG"
           fi
         else
-          echo "holi defconfig not found; attempting generic defconfig fallback"
-          if [ -f kernel/arch/arm64/configs/defconfig ]; then
-            echo "CONFIG_KSU=y" >> kernel/arch/arm64/configs/defconfig
-          else
-            echo "No suitable defconfig found; aborting"
-            exit 1
-          fi
+          echo "holi defconfig not found; aborting"
+          exit 1
         fi
 
     - name: Download stock boot.img
       run: |
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
-        file stock_boot.img || true
 
-    - name: Build kernel (Clang + Android prebuilts + ccache)
-      run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export PATH=$HOME/aarch64-gcc/bin:$PATH
-        export PATH=${{ env.CLANG_CACHE_DIR }}/bin:$PATH
-        export CC="ccache clang"
-        export CXX="ccache clang++"
-        export CROSS_COMPILE=aarch64-linux-android-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export KBUILD_BUILD_USER=github
-        export KBUILD_BUILD_HOST=actions
-        cd kernel
-        ccache --zero-stats
-        make O=out holi_defconfig
-        make -j$(nproc) O=out CC="ccache clang" CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
-        ccache --show-stats
-
-    - name: Unpack stock boot.img with pybootimg
+    - name: Unpack stock boot.img with abootimg
       run: |
         mkdir unpacked
-        pybootimg --unpack-bootimg stock_boot.img unpacked
-        # pybootimg writes bootimg.json with offsets etc.
+        abootimg -x stock_boot.img
+        mv boot.img-* unpacked/
         ls -la unpacked
 
-    - name: Put new kernel into unpacked ram (Image.gz-dtb)
+    - name: Replace kernel in unpacked boot folder
       run: |
-        cp kernel/out/arch/arm64/boot/Image.gz-dtb unpacked/
-        ls -la unpacked
+        cp kernel/out/arch/arm64/boot/Image.gz-dtb unpacked/zImage
+        ls -la unpacked/
 
-    - name: Repack boot.img (using mkbootimg from python tool or pybootimg)
+    - name: Repack boot.img with mkbootimg
       run: |
-        # prefer pybootimg's repack if available:
-        python3 - <<'PY'
-import json,subprocess,sys,os
-j=json.load(open('unpacked/bootimg.json'))
-kernel='unpacked/Image.gz-dtb'
-ramdisk='unpacked/ramdisk'
-out='boot_kernelsu_next.img'
-cmd=[
-  'mkbootimg',
-  '--kernel', kernel,
-  '--ramdisk', ramdisk,
-  '--base', str(j.get('base','0x0')),
-  '--pagesize', str(j.get('pagesize', '4096')),
-  '--kernel_offset', str(j.get('kernel_offset','0x00008000')),
-  '--ramdisk_offset', str(j.get('ramdisk_offset','0x01000000')),
-  '--tags_offset', str(j.get('tags_offset','0x000001000')),
-  '-o', out
-]
-# fallback: try pybootimg repack if mkbootimg not present
-try:
-  subprocess.check_call(cmd)
-except Exception:
-  # try pybootimg repack (pybootimg has repack flag)
-  subprocess.check_call(['pybootimg','--repack-bootimg','unpacked','-o',out])
-print('wrote', out)
-PY
+        ./mkbootimg \
+          --kernel unpacked/zImage \
+          --ramdisk unpacked/initrd.img \
+          --cmdline "$(cat unpacked/bootimg.cmdline)" \
+          --base 0x10000000 \
+          --pagesize 4096 \
+          -o boot_kernelsu_next.img
 
     - name: Upload KernelSU-next boot.img
       uses: actions/upload-artifact@v4
       with:
         name: boot_kernelsu_next.img
         path: boot_kernelsu_next.img
+
+    - name: Show ccache stats
+      run: |
+        ccache --show-stats
