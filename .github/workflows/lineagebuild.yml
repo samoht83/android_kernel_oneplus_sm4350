@@ -1,0 +1,71 @@
+name: Build LineageOS Boot Image with KernelSU v0.9.5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout workflow repo
+      uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bc bison build-essential curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick \
+          lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev \
+          libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev \
+          openjdk-11-jdk python-is-python3 ccache
+
+    - name: Set up ccache
+      run: |
+        export USE_CCACHE=1
+        export CCACHE_EXEC=$(which ccache)
+        ccache -M 50G
+
+    - name: Repo init LineageOS source
+      run: |
+        mkdir -p ~/android/lineage
+        cd ~/android/lineage
+        repo init -u https://github.com/LineageOS/android.git -b lineage-22.2 --git-lfs --no-clone-bundle
+
+    - name: Repo sync
+      run: |
+        cd ~/android/lineage
+        repo sync -j$(nproc) --force-sync --no-clone-bundle --no-tags
+
+    - name: Setup environment
+      run: |
+        cd ~/android/lineage
+        source build/envsetup.sh
+        breakfast dre
+
+    - name: Integrate KernelSU v0.9.5
+      run: |
+        cd ~/android/lineage/kernel/oneplus/sm4350
+        git clone https://github.com/tiann/KernelSU.git kernelsu
+        cd kernelsu
+        git checkout v0.9.5
+        ./setup.sh ../
+
+        DEFCONFIG=$(find ../arch/arm64/configs -name "*holi*_defconfig" | head -n 1)
+        if [ -n "$DEFCONFIG" ]; then
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+        else
+          echo "Warning: Could not find holi defconfig!"
+        fi
+
+    - name: Build bootimage
+      run: |
+        cd ~/android/lineage
+        source build/envsetup.sh
+        breakfast dre
+        mka bootimage
+
+    - name: Upload boot.img
+      uses: actions/upload-artifact@v4
+      with:
+        name: boot-kernelsu-v0.9.5
+        path: ~/android/lineage/out/target/product/dre/boot.img
