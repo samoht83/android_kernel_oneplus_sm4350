@@ -3,112 +3,75 @@ name: Build KernelSU Kernel and Repack Boot Image
 on:
   workflow_dispatch:
     inputs:
-      stock_boot_url:
-        description: 'URL to stock boot.img'
+      kernelsu_version:
+        description: 'KernelSU version tag (e.g., v0.9.5)'
         required: true
+        default: 'v0.9.5'
         type: string
-        default: https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/lineage-22.2/stock/original_boot.img
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://github.com/.../boot.img'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     env:
-      KERNEL_REPO: https://github.com/samoht83/android_kernel_oneplus_sm4350.git
-      KERNEL_BRANCH: lineage-22.2
-      CLANG_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz
-      CLANG_DIR: ${{ github.workspace }}/clang
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
 
     steps:
-    - name: Checkout Kernel source
-      run: |
-        git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
+    - uses: actions/checkout@v4
 
-    - name: Install dependencies (libtinfo5 + ccache)
+    # 1. Install deps for Clang & binutils
+    - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libtinfo5 ccache
+        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu
 
-    - name: Restore ccache
+    # 2. Cache ccache
+    - name: Setup ccache cache
       uses: actions/cache@v4
       with:
-        path: ${{ env.CCACHE_DIR }}
-        key: ccache-${{ github.workflow }}
+        path: .ccache
+        key: ${{ runner.os }}-ccache-${{ github.run_id }}
         restore-keys: |
-          ccache-
+          ${{ runner.os }}-ccache-
 
-    - name: Restore Clang toolchain
-      uses: actions/cache@v4
-      with:
-        path: ${{ env.CLANG_DIR }}
-        key: clang-${{ env.CLANG_URL }}
-    
-    - name: Download and extract Clang toolchain (if missing)
+    # 3. Download Clang
+    - name: Download Clang Toolchain
       run: |
-        if [ ! -d "$CLANG_DIR/bin" ]; then
-          mkdir -p "$CLANG_DIR"
-          curl -L $CLANG_URL | tar -xJ --strip-components=1 -C "$CLANG_DIR"
-        fi
-        export PATH=$CLANG_DIR/bin:$PATH
-        clang --version
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android-14.0.0_r50/clang-r450784d.tar.gz"
+        mkdir -p $HOME/clang
+        curl -L "$CLANG_URL" | tar -xz -C $HOME/clang
+        echo "$HOME/clang/bin" >> $GITHUB_PATH
 
-    - name: Setup KernelSU-Next
+    # 4. Download Android aarch64 GCC 4.9 binutils
+    - name: Download Android GCC binutils
       run: |
-        cd kernel
-        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $HOME/aarch64-gcc
+        echo "$HOME/aarch64-gcc/bin" >> $GITHUB_PATH
 
-    - name: Enable KernelSU in defconfig (only if missing)
-      run: |
-        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
-        if [ -n "$DEFCONFIG" ]; then
-          if ! grep -q "^CONFIG_KSU=y" "$DEFCONFIG"; then
-            echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-            echo "Added CONFIG_KSU=y to $DEFCONFIG"
-          else
-            echo "CONFIG_KSU already present in $DEFCONFIG"
-          fi
-        else
-          echo "holi defconfig not found!"
-          exit 1
-        fi
-
-    - name: Download stock boot.img
-      run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
-
+    # 5. Build kernel
     - name: Build kernel
       run: |
         export ARCH=arm64
+        export SUBARCH=arm64
+        export CC=clang
         export CROSS_COMPILE=aarch64-linux-android-
-        export PATH=$CLANG_DIR/bin:$PATH
-        export CC="ccache clang"
-        export CXX="ccache clang++"
-        cd kernel
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export PATH=$HOME/clang/bin:$PATH
+        export PATH=$HOME/aarch64-gcc/bin:$PATH
+        export KBUILD_BUILD_USER=github
+        export KBUILD_BUILD_HOST=actions
+        ccache --zero-stats
         make O=out holi_defconfig
-        make -j$(nproc) O=out CC="ccache clang" CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
-        ccache -s
+        make -j$(nproc) O=out
 
-    - name: Download magiskboot tool
+    # 6. Save ccache stats
+    - name: Save ccache stats
       run: |
-        curl -LO https://raw.githubusercontent.com/topjohnwu/magiskboot/main/magiskboot
-        chmod +x magiskboot
-
-    - name: Extract stock boot.img
-      run: |
-        mkdir stock_boot
-        ./magiskboot unpack stock_boot.img -o stock_boot
-
-    - name: Replace kernel in boot.img
-      run: |
-        cp kernel/out/Image.gz-dtb stock_boot/
-        ./magiskboot repack stock_boot -o boot.img
-
-    - name: Upload repacked boot.img
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernelsu-boot.img
-        path: boot.img
+        ccache --show-stats
