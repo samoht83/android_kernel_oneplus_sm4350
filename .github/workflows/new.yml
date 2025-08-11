@@ -2,100 +2,77 @@ name: Build KernelSU Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
-    inputs:
-      kernelsu_version:
-        description: 'KernelSU version tag (e.g., v0.9.5)'
-        required: true
-        default: 'v0.9.5'
-        type: string
-      stock_boot_url:
-        description: 'URL to the stock boot.img for repacking'
-        required: true
-        default: 'https://github.com/example/boot.img'
-        type: string
 
 jobs:
   build:
-    name: Build Kernel by ${{ github.actor }}
     runs-on: ubuntu-22.04
+
     env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-      CCACHE_MAXSIZE: "3G"
+      KERNEL_REPO: https://github.com/LineageOS/android_kernel_oneplus_sm4350.git
+      KERNEL_BRANCH: lineage-22.2
+      KERNELSU_TAG: v0.9.5
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz
+      STOCK_BOOT_URL: https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/700c84fe28425cd8d4925d27eda34095a52554e5/stock/original_boot.img
 
     steps:
-    # Checkout your kernel source
-    - uses: actions/checkout@v4
-
-    # Free disk space before starting
-    - name: Free up disk space
+    - name: Checkout Kernel source
       run: |
-        echo "Cleaning up preinstalled software to free space..."
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /usr/local/lib/android
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /usr/local/share/boost
-        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-        sudo apt-get clean
-        docker system prune -af || true
-        df -h
+        git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
 
-    # Install required packages
-    - name: Install dependencies
+    - name: Download and extract Clang 14 toolchain
       run: |
-        sudo apt-get update
-        sudo apt-get install -y bc bison flex libssl-dev make gcc clang lld ccache curl unzip
+        curl -L $CLANG_URL | tar -xJ -C $HOME
+        export PATH=$HOME/clang-r450784d/bin:$PATH
+        clang --version
 
-    # Download Clang toolchain
-    - name: Download Clang Toolchain
+    - name: Clone KernelSU and setup
       run: |
-        mkdir -p ~/toolchain
-        curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz \
-          | tar -xz -C ~/toolchain
-        echo "$HOME/toolchain/clang-r450784d/bin" >> $GITHUB_PATH
+        cd kernel
+        git clone https://github.com/tiann/KernelSU.git kernelsu
+        cd kernelsu
+        git checkout ${{ env.KERNELSU_TAG }}
+        ./setup.sh ../
 
-    # Download KernelSU
-    - name: Download KernelSU
+    - name: Enable KernelSU in defconfig
       run: |
-        git clone --depth=1 --branch ${{ github.event.inputs.kernelsu_version }} https://github.com/tiann/KernelSU.git kernelsu
-        cp -r kernelsu/kernel/* .
+        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
+        if [ -n "$DEFCONFIG" ]; then
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+        else
+          echo "holi defconfig not found!" >&2
+          exit 1
+        fi
 
-    # Prepare defconfig
-    - name: Set defconfig
-      run: |
-        make O=out ARCH=arm64 vendor/holi_defconfig
-
-    # Build kernel
-    - name: Build kernel
-      run: |
-        make -j$(nproc) O=out ARCH=arm64 \
-          CC=clang \
-          LLVM=1 \
-          LLVM_IAS=1
-
-    # Download stock boot.img to /tmp (not workspace)
     - name: Download stock boot.img
       run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o /tmp/boot.img
+        curl -L "${{ env.STOCK_BOOT_URL }}" -o stock_boot.img
 
-    # Unpack & repack boot.img with new kernel
-    - name: Repack boot.img
+    - name: Build kernel
       run: |
-        git clone https://github.com/osm0sis/mkbootimg.git mkbootimg
-        git clone https://github.com/osm0sis/AnyKernel3.git anykernel
-        cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-        cd anykernel
-        zip -r9 ../KernelSU-${{ github.event.inputs.kernelsu_version }}.zip .
+        export ARCH=arm64
+        export CROSS_COMPILE=aarch64-linux-android-
+        export PATH=$HOME/clang-r450784d/bin:$PATH
+        cd kernel
+        make O=out holi_defconfig
+        make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
 
-    # Upload artifact
-    - uses: actions/upload-artifact@v4
+    - name: Download magiskboot tool
+      run: |
+        curl -LO https://raw.githubusercontent.com/topjohnwu/magiskboot/main/magiskboot
+        chmod +x magiskboot
+
+    - name: Extract stock boot.img
+      run: |
+        mkdir stock_boot
+        ./magiskboot unpack stock_boot.img -o stock_boot
+
+    - name: Replace kernel in boot.img
+      run: |
+        cp kernel/out/Image.gz-dtb stock_boot/
+        ./magiskboot repack stock_boot -o boot.img
+
+    - name: Upload repacked boot.img
+      uses: actions/upload-artifact@v4
       with:
-        name: KernelSU-${{ github.event.inputs.kernelsu_version }}
-        path: KernelSU-${{ github.event.inputs.kernelsu_version }}.zip
-
-    # Final cleanup
-    - name: Cleanup to avoid space issues
-      run: |
-        rm -rf out/* kernelsu mkbootimg anykernel ~/toolchain /tmp/*
-        df -h
+        name: kernelsu-boot.img
+        path: boot.img
