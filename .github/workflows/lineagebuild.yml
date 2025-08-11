@@ -46,7 +46,7 @@ jobs:
 
     - name: Download and install Clang (if missing)
       run: |
-        CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-aarch64-pc-windows-msvc.tar.xz"
+        CLANG_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-armv7a-linux-gnueabihf.tar.gz"
         if [ ! -d "${{ env.CLANG_CACHE_DIR }}/bin" ]; then
           mkdir -p "${{ env.CLANG_CACHE_DIR }}"
           curl -L "$CLANG_URL" | tar -xz --strip-components=0 -C "${{ env.CLANG_CACHE_DIR }}"
