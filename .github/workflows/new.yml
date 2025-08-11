@@ -5,74 +5,71 @@ on:
 
 jobs:
   build:
+    name: Build Kernel by ${{ github.actor }}
     runs-on: ubuntu-22.04
 
-    env:
-      KERNEL_REPO: https://github.com/LineageOS/android_kernel_oneplus_sm4350.git
-      KERNEL_BRANCH: lineage-22.2
-      KERNELSU_TAG: v0.9.5
-      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/android-14.0.0_r50/clang-r450784d.tar.gz
-      STOCK_BOOT_URL: https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/700c84fe28425cd8d4925d27eda34095a52554e5/stock/original_boot.img
-
     steps:
-    - name: Checkout Kernel source
-      run: |
-        git clone --depth=1 --branch ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: samoht83/android_kernel_oneplus_sm4350
+          ref: lineage-22.2
 
-    - name: Download and extract Clang 14 toolchain
-      run: |
-        curl -L $CLANG_URL | tar -xJ -C $HOME
-        export PATH=$HOME/clang-r450784d/bin:$PATH
-        clang --version
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget curl unzip bc bison flex build-essential \
+            libncurses5-dev libssl-dev ccache xz-utils python3 python3-pip
 
-    - name: Clone KernelSU and setup
-      run: |
-        cd kernel
-        git clone https://github.com/tiann/KernelSU.git kernelsu
-        cd kernelsu
-        git checkout ${{ env.KERNELSU_TAG }}
-        ./setup.sh ../
+      - name: Setup ccache
+        run: |
+          echo "max_size = 10G" >> ~/.ccache/ccache.conf
+          ccache -M 10G
+          ccache -s
 
-    - name: Enable KernelSU in defconfig
-      run: |
-        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
-        if [ -n "$DEFCONFIG" ]; then
-          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-        else
-          echo "holi defconfig not found!" >&2
-          exit 1
-        fi
+      - name: Download Clang 14 Toolchain
+        run: |
+          mkdir -p ~/toolchain
+          cd ~/toolchain
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784e.tar.xz
+          tar -xf clang-r450784e.tar.xz
+          echo "$HOME/toolchain/clang-r450784e/bin" >> $GITHUB_PATH
 
-    - name: Download stock boot.img
-      run: |
-        curl -L "${{ env.STOCK_BOOT_URL }}" -o stock_boot.img
+      - name: Clone KernelSU
+        run: |
+          git clone --depth=1 --branch v0.9.5 https://github.com/tiann/KernelSU.git kernelsu
+          cd kernelsu
+          ./setup.sh ../
 
-    - name: Build kernel
-      run: |
-        export ARCH=arm64
-        export CROSS_COMPILE=aarch64-linux-android-
-        export PATH=$HOME/clang-r450784d/bin:$PATH
-        cd kernel
-        make O=out holi_defconfig
-        make -j$(nproc) O=out CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+      - name: Build Kernel
+        run: |
+          export PATH=$HOME/toolchain/clang-r450784e/bin:$PATH
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export USE_CCACHE=1
+          export CCACHE_DIR=$HOME/.ccache
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          make O=out vendor/holi-qgki_defconfig
+          make -j$(nproc) O=out
 
-    - name: Download magiskboot tool
-      run: |
-        curl -LO https://raw.githubusercontent.com/topjohnwu/magiskboot/main/magiskboot
-        chmod +x magiskboot
+      - name: Download Stock Boot Image
+        run: |
+          mkdir -p stock_boot
+          wget -O stock_boot/original_boot.img https://github.com/samoht83/android_kernel_oneplus_sm4350/raw/700c84fe28425cd8d4925d27eda34095a52554e5/stock/original_boot.img
 
-    - name: Extract stock boot.img
-      run: |
-        mkdir stock_boot
-        ./magiskboot unpack stock_boot.img -o stock_boot
+      - name: Unpack, Repack, and Patch Boot Image
+        run: |
+          git clone https://github.com/topjohnwu/magiskboot.git
+          cd magiskboot
+          make
+          cd ..
+          ./magiskboot/magiskboot unpack stock_boot/original_boot.img
+          cp out/arch/arm64/boot/Image.gz-dtb kernel
+          ./magiskboot/magiskboot repack stock_boot/original_boot.img
 
-    - name: Replace kernel in boot.img
-      run: |
-        cp kernel/out/Image.gz-dtb stock_boot/
-        ./magiskboot repack stock_boot -o boot.img
-
-    - name: Upload repacked boot.img
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernelsu-boot.img
-        path: boot.img
+      - name: Upload Patched Boot Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched_boot.img
+          path: new-boot.img
