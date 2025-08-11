@@ -1,13 +1,8 @@
-name: Build KernelSU Kernel and Repack Boot Image
+name: Build KernelSU-next Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
     inputs:
-      kernelsu_version:
-        description: 'KernelSU version tag (e.g., v0.9.5)'
-        required: true
-        default: 'v0.9.5'
-        type: string
       stock_boot_url:
         description: 'URL to the stock boot.img for repacking'
         required: true
@@ -26,11 +21,12 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. Install deps for Clang & binutils
+    # 1. Install deps
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu
+        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu python3-pip
+        pip install pybootimg
 
     # 2. Cache ccache
     - name: Setup ccache cache
@@ -41,7 +37,7 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-ccache-
 
-    # 3. Download Clang
+    # 3. Download Clang Toolchain
     - name: Download Clang Toolchain
       run: |
         CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android-14.0.0_r50/clang-r450784d.tar.gz"
@@ -49,13 +45,28 @@ jobs:
         curl -L "$CLANG_URL" | tar -xz -C $HOME/clang
         echo "$HOME/clang/bin" >> $GITHUB_PATH
 
-    # 4. Download Android aarch64 GCC 4.9 binutils
+    # 4. Download Android GCC binutils
     - name: Download Android GCC binutils
       run: |
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $HOME/aarch64-gcc
         echo "$HOME/aarch64-gcc/bin" >> $GITHUB_PATH
 
-    # 5. Build kernel
+    # 5. Clone KernelSU-next
+    - name: Clone KernelSU-next
+      run: |
+        git clone --depth=1 https://github.com/tiann/KernelSU-next.git KernelSU
+        cp -r KernelSU/kernel/* ./ # Copy KernelSU kernel patches into your kernel tree
+
+    # 6. Apply KernelSU-next patch
+    - name: Apply KernelSU-next patch
+      run: |
+        if [ -f "KernelSU/kernel/patch.sh" ]; then
+          bash KernelSU/kernel/patch.sh ./
+        else
+          echo "KernelSU patch script not found, copying sources only."
+        fi
+
+    # 7. Build kernel
     - name: Build kernel
       run: |
         export ARCH=arm64
@@ -63,15 +74,48 @@ jobs:
         export CC=clang
         export CROSS_COMPILE=aarch64-linux-android-
         export CLANG_TRIPLE=aarch64-linux-gnu-
-        export PATH=$HOME/clang/bin:$PATH
-        export PATH=$HOME/aarch64-gcc/bin:$PATH
+        export PATH=$HOME/clang/bin:$HOME/aarch64-gcc/bin:$PATH
         export KBUILD_BUILD_USER=github
         export KBUILD_BUILD_HOST=actions
         ccache --zero-stats
         make O=out holi_defconfig
         make -j$(nproc) O=out
 
-    # 6. Save ccache stats
+    # 8. Download stock boot.img
+    - name: Download stock boot.img
+      run: |
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+
+    # 9. Unpack stock boot.img
+    - name: Unpack stock boot.img
+      run: |
+        mkdir unpacked_boot
+        pybootimg --unpack-bootimg stock_boot.img unpacked_boot/
+        cp out/arch/arm64/boot/Image.gz-dtb unpacked_boot/
+
+    # 10. Repack boot.img with KernelSU-enabled kernel
+    - name: Repack boot.img
+      run: |
+        mkbootimg \
+          --kernel unpacked_boot/Image.gz-dtb \
+          --ramdisk unpacked_boot/ramdisk \
+          --base $(cat unpacked_boot/bootimg.json | jq -r '.base') \
+          --pagesize $(cat unpacked_boot/bootimg.json | jq -r '.pagesize') \
+          --kernel_offset $(cat unpacked_boot/bootimg.json | jq -r '.kernel_offset') \
+          --ramdisk_offset $(cat unpacked_boot/bootimg.json | jq -r '.ramdisk_offset') \
+          --tags_offset $(cat unpacked_boot/bootimg.json | jq -r '.tags_offset') \
+          --os_version $(cat unpacked_boot/bootimg.json | jq -r '.os_version') \
+          --os_patch_level $(cat unpacked_boot/bootimg.json | jq -r '.os_patch_level') \
+          -o boot_kernelsu_next.img
+
+    # 11. Upload final boot.img
+    - name: Upload KernelSU-next boot.img
+      uses: actions/upload-artifact@v4
+      with:
+        name: boot_kernelsu_next.img
+        path: boot_kernelsu_next.img
+
+    # 12. Show ccache stats
     - name: Save ccache stats
       run: |
         ccache --show-stats
