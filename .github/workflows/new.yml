@@ -67,7 +67,9 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential cpio curl flex git libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld wget file llvm-18-tools zip
+        sudo apt-get install -y bc bison build-essential cpio curl flex git \
+          libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld \
+          wget file llvm-18-tools zip
 
     # Set environment variables
     - name: Setup environment variables
@@ -85,34 +87,34 @@ jobs:
         set -euo pipefail
         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ github.event.inputs.kernelsu_version }}"
         cat >> arch/arm64/configs/n200_defconfig <<'EOF'
-# KernelSU Requirements
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_OVERLAY_FS=y
-CONFIG_KERNELSU=y
-# Patch for build errors
-# CONFIG_RMNET is not set
-EOF
+        # KernelSU Requirements
+        CONFIG_KPROBES=y
+        CONFIG_HAVE_KPROBES=y
+        CONFIG_KPROBE_EVENTS=y
+        CONFIG_OVERLAY_FS=y
+        CONFIG_KERNELSU=y
+        # Patch for build errors
+        # CONFIG_RMNET is not set
+        EOF
         mkdir -p drivers/misc
         cat > drivers/misc/oplus_stubs.c <<'EOC'
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/errno.h>
+        #include <linux/module.h>
+        #include <linux/kernel.h>
+        #include <linux/errno.h>
 
-void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
-    pr_err("STUB: qcom_smem_get called\n");
-    if (size) *size = 0;
-    return ERR_PTR(-ENOENT);
-}
-EXPORT_SYMBOL(qcom_smem_get);
+        void *qcom_smem_get(unsigned host, unsigned item, size_t *size) {
+            pr_err("STUB: qcom_smem_get called\n");
+            if (size) *size = 0;
+            return ERR_PTR(-ENOENT);
+        }
+        EXPORT_SYMBOL(qcom_smem_get);
 
-int get_project(void) {
-    pr_warn("STUB: get_project called, returning default\n");
-    return 21000;
-}
-EXPORT_SYMBOL(get_project);
-EOC
+        int get_project(void) {
+            pr_warn("STUB: get_project called, returning default\n");
+            return 21000;
+        }
+        EXPORT_SYMBOL(get_project);
+        EOC
         echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
 
     # Build Kernel
@@ -127,7 +129,7 @@ EOC
       uses: actions/cache@v4
       with:
         path: stock_boot.img
-        key: stockboot-${{ github.event.inputs.stock_boot_url }}
+        key: stockboot-${{ hashFiles(github.event.inputs.stock_boot_url) }}
 
     - name: Download Stock Boot Image
       if: steps.stockboot-cache.outputs.cache-hit != 'true'
@@ -140,7 +142,7 @@ EOC
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
         cp out/arch/arm64/boot/Image AnyKernel3/
         cd AnyKernel3
-        zip -r9 ../KernelSU_kernel.zip *
+        zip -r9 ../KernelSU_kernel.zip ./*
         cd ..
 
     # Upload flashable zip artifact
