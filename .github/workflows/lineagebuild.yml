@@ -6,14 +6,15 @@ on:
       stock_boot_url:
         description: 'URL to the stock boot.img for repacking'
         required: true
-        default: 'https://github.com/.../boot.img'
         type: string
+        default: 'https://raw.githubusercontent.com/samoht83/android_kernel_oneplus_sm4350/55c73263178dda755db0a217037d4e59c12c24aa/stock/original_boot.img'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CLANG_CACHE_DIR: ${{ github.workspace }}/clang
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
@@ -21,101 +22,150 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # 1. Install deps
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu python3-pip
-        pip install pybootimg
+        sudo apt-get install -y libtinfo5 ccache curl git python3 unzip gcc-aarch64-linux-gnu jq build-essential python3-pip
+        
 
-    # 2. Cache ccache
-    - name: Setup ccache cache
+    - name: Restore ccache
       uses: actions/cache@v4
       with:
-        path: .ccache
-        key: ${{ runner.os }}-ccache-${{ github.run_id }}
+        path: ${{ env.CCACHE_DIR }}
+        key: ccache-${{ github.workflow }}
         restore-keys: |
-          ${{ runner.os }}-ccache-
+          ccache-
 
-    # 3. Download Clang Toolchain
-    - name: Download Clang Toolchain
+    - name: Restore Clang cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CLANG_CACHE_DIR }}
+        key: clang-${{ env.CLANG_CACHE_DIR }}-v1
+
+    - name: Download and install Clang (if missing)
       run: |
         CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android-14.0.0_r50/clang-r450784d.tar.gz"
-        mkdir -p $HOME/clang
-        curl -L "$CLANG_URL" | tar -xz -C $HOME/clang
-        echo "$HOME/clang/bin" >> $GITHUB_PATH
+        if [ ! -d "${{ env.CLANG_CACHE_DIR }}/bin" ]; then
+          mkdir -p "${{ env.CLANG_CACHE_DIR }}"
+          curl -L "$CLANG_URL" | tar -xz --strip-components=0 -C "${{ env.CLANG_CACHE_DIR }}"
+        fi
+        echo "${{ env.CLANG_CACHE_DIR }}/bin" >> $GITHUB_PATH
+        clang --version
 
-    # 4. Download Android GCC binutils
-    - name: Download Android GCC binutils
+    - name: Download Android GCC 4.9 prebuilts
       run: |
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $HOME/aarch64-gcc
+        if [ ! -d "$HOME/aarch64-gcc/bin" ]; then
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 $HOME/aarch64-gcc
+        fi
         echo "$HOME/aarch64-gcc/bin" >> $GITHUB_PATH
 
-    # 5. Clone KernelSU-next
-    - name: Clone KernelSU-next
+    - name: Clone kernel repo (shallow)
       run: |
-        git clone --depth=1 https://github.com/tiann/KernelSU-next.git KernelSU
-        cp -r KernelSU/kernel/* ./ # Copy KernelSU kernel patches into your kernel tree
+        git clone --depth=1 --branch lineage-22.2 https://github.com/samoht83/android_kernel_oneplus_sm4350.git kernel
+        ls -la kernel
 
-    # 6. Apply KernelSU-next patch
-    - name: Apply KernelSU-next patch
+    - name: Clone KernelSU-next and apply
       run: |
-        if [ -f "KernelSU/kernel/patch.sh" ]; then
-          bash KernelSU/kernel/patch.sh ./
+        git clone --depth=1 https://github.com/tiann/KernelSU-next.git KernelSU-next
+        # kernel/ is the working kernel tree
+        if [ -d "KernelSU-next/kernel" ]; then
+          cp -r KernelSU-next/kernel/* kernel/
+          if [ -f "KernelSU-next/kernel/patch.sh" ]; then
+            pushd kernel
+            bash ../KernelSU-next/kernel/patch.sh .
+            popd
+          fi
         else
-          echo "KernelSU patch script not found, copying sources only."
+          echo "KernelSU-next kernel folder not found, copied top-level files instead."
+          cp -r KernelSU-next/* kernel/ || true
         fi
 
-    # 7. Build kernel
-    - name: Build kernel
+    - name: Ensure CONFIG_KSU in defconfig (only if missing)
       run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export CC=clang
-        export CROSS_COMPILE=aarch64-linux-android-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
-        export PATH=$HOME/clang/bin:$HOME/aarch64-gcc/bin:$PATH
-        export KBUILD_BUILD_USER=github
-        export KBUILD_BUILD_HOST=actions
-        ccache --zero-stats
-        make O=out holi_defconfig
-        make -j$(nproc) O=out
+        DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
+        if [ -n "$DEFCONFIG" ]; then
+          if ! grep -q "^CONFIG_KSU=y" "$DEFCONFIG"; then
+            echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+            echo "Added CONFIG_KSU=y to $DEFCONFIG"
+          else
+            echo "CONFIG_KSU already present in $DEFCONFIG"
+          fi
+        else
+          echo "holi defconfig not found; attempting generic defconfig fallback"
+          if [ -f kernel/arch/arm64/configs/defconfig ]; then
+            echo "CONFIG_KSU=y" >> kernel/arch/arm64/configs/defconfig
+          else
+            echo "No suitable defconfig found; aborting"
+            exit 1
+          fi
+        fi
 
-    # 8. Download stock boot.img
     - name: Download stock boot.img
       run: |
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+        file stock_boot.img || true
 
-    # 9. Unpack stock boot.img
-    - name: Unpack stock boot.img
+    - name: Build kernel (Clang + Android prebuilts + ccache)
       run: |
-        mkdir unpacked_boot
-        pybootimg --unpack-bootimg stock_boot.img unpacked_boot/
-        cp out/arch/arm64/boot/Image.gz-dtb unpacked_boot/
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export PATH=$HOME/aarch64-gcc/bin:$PATH
+        export PATH=${{ env.CLANG_CACHE_DIR }}/bin:$PATH
+        export CC="ccache clang"
+        export CXX="ccache clang++"
+        export CROSS_COMPILE=aarch64-linux-android-
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export KBUILD_BUILD_USER=github
+        export KBUILD_BUILD_HOST=actions
+        cd kernel
+        ccache --zero-stats
+        make O=out holi_defconfig
+        make -j$(nproc) O=out CC="ccache clang" CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+        ccache --show-stats
 
-    # 10. Repack boot.img with KernelSU-enabled kernel
-    - name: Repack boot.img
+    - name: Unpack stock boot.img with pybootimg
       run: |
-        mkbootimg \
-          --kernel unpacked_boot/Image.gz-dtb \
-          --ramdisk unpacked_boot/ramdisk \
-          --base $(cat unpacked_boot/bootimg.json | jq -r '.base') \
-          --pagesize $(cat unpacked_boot/bootimg.json | jq -r '.pagesize') \
-          --kernel_offset $(cat unpacked_boot/bootimg.json | jq -r '.kernel_offset') \
-          --ramdisk_offset $(cat unpacked_boot/bootimg.json | jq -r '.ramdisk_offset') \
-          --tags_offset $(cat unpacked_boot/bootimg.json | jq -r '.tags_offset') \
-          --os_version $(cat unpacked_boot/bootimg.json | jq -r '.os_version') \
-          --os_patch_level $(cat unpacked_boot/bootimg.json | jq -r '.os_patch_level') \
-          -o boot_kernelsu_next.img
+        mkdir unpacked
+        pybootimg --unpack-bootimg stock_boot.img unpacked
+        # pybootimg writes bootimg.json with offsets etc.
+        ls -la unpacked
 
-    # 11. Upload final boot.img
+    - name: Put new kernel into unpacked ram (Image.gz-dtb)
+      run: |
+        cp kernel/out/arch/arm64/boot/Image.gz-dtb unpacked/
+        ls -la unpacked
+
+    - name: Repack boot.img (using mkbootimg from python tool or pybootimg)
+      run: |
+        # prefer pybootimg's repack if available:
+        python3 - <<'PY'
+import json,subprocess,sys,os
+j=json.load(open('unpacked/bootimg.json'))
+kernel='unpacked/Image.gz-dtb'
+ramdisk='unpacked/ramdisk'
+out='boot_kernelsu_next.img'
+cmd=[
+  'mkbootimg',
+  '--kernel', kernel,
+  '--ramdisk', ramdisk,
+  '--base', str(j.get('base','0x0')),
+  '--pagesize', str(j.get('pagesize', '4096')),
+  '--kernel_offset', str(j.get('kernel_offset','0x00008000')),
+  '--ramdisk_offset', str(j.get('ramdisk_offset','0x01000000')),
+  '--tags_offset', str(j.get('tags_offset','0x000001000')),
+  '-o', out
+]
+# fallback: try pybootimg repack if mkbootimg not present
+try:
+  subprocess.check_call(cmd)
+except Exception:
+  # try pybootimg repack (pybootimg has repack flag)
+  subprocess.check_call(['pybootimg','--repack-bootimg','unpacked','-o',out])
+print('wrote', out)
+PY
+
     - name: Upload KernelSU-next boot.img
       uses: actions/upload-artifact@v4
       with:
         name: boot_kernelsu_next.img
         path: boot_kernelsu_next.img
-
-    # 12. Show ccache stats
-    - name: Save ccache stats
-      run: |
-        ccache --show-stats
