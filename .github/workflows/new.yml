@@ -34,27 +34,32 @@ jobs:
       CLANG_VERSION: clang-r450784d
 
     steps:
+    - name: Verify input URLs
+      run: |
+        set -e
+        curl --head --fail "${{ github.event.inputs.stock_boot_url }}" || (echo "Invalid stock_boot_url" && exit 1)
+        git ls-remote "${{ github.event.inputs.kernel_repo_url }}" &> /dev/null || (echo "Invalid kernel_repo_url" && exit 1)
+
     - name: Checkout Kernel source
       uses: actions/checkout@v4
       with:
         repository: ${{ github.event.inputs.kernel_repo_url }}
         path: kernel
-        branch: ${{ github.event.inputs.kernel_repo_branch }}
-        depth: 1
+        ref: ${{ github.event.inputs.kernel_repo_branch }}
+        fetch-depth: 1
 
-    - name: Cache Dependencies
-      id: cache
+    - name: Cache Clang Toolchain
+      id: cache-clang
       uses: actions/cache@v4
       with:
-        path: |
-          ${{ env.CLANG_DIR }}
+        path: ${{ env.CLANG_DIR }}
         key: ${{ runner.os }}-clang-${{ env.CLANG_VERSION }}
 
     - name: Download and extract Clang toolchain
-      if: steps.cache.outputs.cache-hit != 'true'
+      if: steps.cache-clang.outputs.cache-hit != 'true'
       run: |
         mkdir -p ${{ env.CLANG_DIR }}
-        curl -L "${{ env.CLANG_URL }}" | tar -xz -C ${{ env.CLANG_DIR }}
+        curl -L --retry 3 "${{ env.CLANG_URL }}" | tar -xz -C ${{ env.CLANG_DIR }}
 
     - name: Add Clang to PATH
       run: |
@@ -64,7 +69,7 @@ jobs:
     - name: Clone KernelSU and setup
       run: |
         cd kernel
-        git clone https://github.com/tiann/KernelSU.git kernelsu
+        git clone https://github.com/tiann/KernelSU.git kernelsu --depth 1
         cd kernelsu
         git checkout ${{ github.event.inputs.kernelsu_version }}
         chmod +x setup.sh
@@ -73,37 +78,43 @@ jobs:
     - name: Enable KernelSU in defconfig
       run: |
         DEFCONFIG=$(find kernel/arch/arm64/configs -name "*holi*_defconfig" | head -n1)
-        if [ -n "$DEFCONFIG" ]; then
-          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-          echo "KernelSU enabled in $DEFCONFIG"
-        else
-          echo "holi defconfig not found!"
-          exit 1
-        fi
+        [ -n "$DEFCONFIG" ] && echo "CONFIG_KSU=y" >> "$DEFCONFIG" || (echo "Defconfig not found" && exit 1)
 
-    - name: Build kernel
+    - name: Compile Kernel
       run: |
         cd kernel
         make O=out ARCH=arm64 holi_defconfig
-        make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
+        make -j$(nproc) O=out ARCH=arm64 \
+          CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
 
-    - name: Download boot utility and stock image
+    - name: Cache Magiskboot
+      id: cache-magisk
+      uses: actions/cache@v4
+      with:
+        path: magiskboot
+        key: magiskboot-v27
+
+    - name: Download Magiskboot
+      if: steps.cache-magisk.outputs.cache-hit != 'true'
       run: |
         curl -LO https://github.com/topjohnwu/Magisk/releases/download/v27.0/magiskboot
         chmod +x magiskboot
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-    - name: Repack boot image with new Kernel
+    - name: Download Stock Boot Image
       run: |
-        # Create a dedicated directory for unpacking to keep the workspace clean.
+        curl -L --retry 3 "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+
+    - name: Repack Boot Image with New Kernel
+      run: |
         mkdir unpacked_boot
         cd unpacked_boot
-
-        # Unpack the stock image located in the parent directory.
-        # This will create files like 'kernel', 'ramdisk.cpio', etc., inside the current 'unpacked_boot' directory.
         ../magiskboot unpack ../stock_boot.img
+        cp ../kernel/out/arch/arm64/boot/Image.gz-dtb kernel
+        ../magiskboot repack ../stock_boot.img
+        mv new-boot.img ../kernelsu_boot.img
 
-        # Copy the newly built kernel image, overwriting the original one.
-        # NOTE: The kernel image with an embedded device tree is typically named 'Image.gz-dtb' or 'Image-dtb'.
-        # This path is the most common output location.
-        cp ../kernel/out/arch
+    - name: Upload KernelSU Boot Image
+      uses: actions/upload-artifact@v3
+      with:
+        name: kernelsu_boot
+        path: kernelsu_boot.img
