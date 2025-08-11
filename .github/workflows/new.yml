@@ -1,4 +1,5 @@
-name: Build KernelSU Kernel and Repack Boot Image
+# A more descriptive name for the workflow
+name: Build KernelSU Kernel and Create Flashable Zip
 
 on:
   workflow_dispatch:
@@ -8,54 +9,72 @@ on:
         required: true
         default: 'v0.9.5'
         type: string
-      stock_boot_url:
-        description: 'URL to the stock boot.img for repacking'
-        required: true
-        default: 'https://github.com/username/repo/releases/download/tag/boot.img'
-        type: string
+      # NOTE: Removed stock_boot_url as it was unused. AnyKernel3 patches the
+      # boot image on the device itself, it does not need a stock image during build.
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     env:
+      # Environment variables for ccache
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
 
     steps:
+    # Step 1: Checkout your kernel source repository
     - name: Checkout kernel source
       uses: actions/checkout@v4
 
-    # Cache Clang
+    # Step 2: Set up the Clang Toolchain
     - name: Cache Clang Toolchain
       id: clang-cache
       uses: actions/cache@v4
       with:
         path: toolchain/linux-x86/clang-r450784d
-        key: clang-r450784d
+        # Use a versioned key to ensure the correct content is cached
+        key: clang-r450784d-v2
 
     - name: Download Clang Toolchain
       if: steps.clang-cache.outputs.cache-hit != 'true'
       run: |
-        echo "Downloading Clang 14 prebuilts..."
-        mkdir -p toolchain/linux-x86
-        curl -fSL --connect-timeout 30 --retry 3 --retry-delay 5 \
-          "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz" \
-          -o clang.tar.gz
-        mkdir -p toolchain/linux-x86/clang-r450784d
-        tar -xzf clang.tar.gz -C toolchain/linux-x86/clang-r450784d
-        rm clang.tar.gz
-        echo "✅ Clang extracted successfully"
+        set -e # Exit immediately on any error
+        echo "Downloading Clang 14 prebuilts from AOSP Git..."
+        TOOLCHAIN_DIR="toolchain/linux-x86"
+        CLANG_REVISION="clang-r450784d"
+        CLANG_REPO_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86"
+        
+        mkdir -p "${TOOLCHAIN_DIR}"
+        
+        # FIX: Use a sparse git checkout. This is the correct and efficient method
+        # to download a specific subdirectory from the large AOSP repository.
+        git clone \
+          --branch main \
+          --depth=1 \
+          --filter=blob:none \
+          --no-checkout \
+          "${CLANG_REPO_URL}" "_temp_clang_clone"
+          
+        cd _temp_clang_clone
+        git sparse-checkout set "${CLANG_REVISION}"
+        git checkout
+        cd ..
+        
+        # Move the downloaded toolchain to its final location and clean up the temp clone
+        mv "_temp_clang_clone/${CLANG_REVISION}" "${TOOLCHAIN_DIR}/${CLANG_REVISION}"
+        rm -rf _temp_clang_clone
+        
+        echo "✅ Clang toolchain ${CLANG_REVISION} downloaded successfully."
 
-    # Cache KernelSU
-    - name: Cache KernelSU
+    # Step 3: Set up KernelSU Source
+    - name: Cache KernelSU Source
       id: kernelsu-cache
       uses: actions/cache@v4
       with:
         path: KernelSU
         key: kernelsu-${{ github.event.inputs.kernelsu_version }}
 
-    - name: Download KernelSU
+    - name: Download KernelSU Source
       if: steps.kernelsu-cache.outputs.cache-hit != 'true'
       run: |
         echo "Downloading KernelSU ${{ github.event.inputs.kernelsu_version }}..."
@@ -63,39 +82,43 @@ jobs:
           https://github.com/tiann/KernelSU.git KernelSU
         echo "✅ KernelSU downloaded successfully"
 
-    # Install dependencies
-    - name: Install Dependencies
+    # Step 4: Install System Dependencies
+    - name: Install Build Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y bc bison build-essential cpio curl flex git \
-          libssl-dev libelf-dev libncurses-dev python3 unzip xz-utils lld \
-          wget file llvm-18-tools zip
+        sudo apt-get install -y \
+          bc bison build-essential cpio curl flex git \
+          libssl-dev libelf-dev libncurses-dev python3 \
+          unzip xz-utils lld wget file zip
 
-    # Set environment variables
-    - name: Setup environment variables
+    # Step 5: Configure the Build Environment
+    - name: Setup Build Environment
       run: |
+        echo "Setting up environment variables..."
+        # Add the downloaded Clang toolchain's bin directory to the system PATH
         echo "$GITHUB_WORKSPACE/toolchain/linux-x86/clang-r450784d/bin" >> $GITHUB_PATH
+        
+        # Set Kbuild environment variables for an ARM64 Clang (LLVM) build
         echo "ARCH=arm64" >> $GITHUB_ENV
         echo "SUBARCH=arm64" >> $GITHUB_ENV
         echo "LLVM=1" >> $GITHUB_ENV
         echo "LLVM_IAS=1" >> $GITHUB_ENV
         echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "✅ Environment configured."
 
-    # Integrate KernelSU & patch config
-    - name: Integrate KernelSU and patch defconfig
+    # Step 6: Integrate KernelSU and Apply Kernel-Specific Patches
+    - name: Integrate KernelSU and Apply Patches
       run: |
         set -euo pipefail
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ github.event.inputs.kernelsu_version }}"
-        cat >> arch/arm64/configs/n200_defconfig <<'EOF'
-        # KernelSU Requirements
-        CONFIG_KPROBES=y
-        CONFIG_HAVE_KPROBES=y
-        CONFIG_KPROBE_EVENTS=y
-        CONFIG_OVERLAY_FS=y
-        CONFIG_KERNELSU=y
-        # Patch for build errors
-        # CONFIG_RMNET is not set
-        EOF
+        echo "Integrating KernelSU..."
+        # FIX: Use the setup script from the *locally cloned* KernelSU version.
+        # This ensures compatibility between the script and the source code.
+        # This script also correctly patches the defconfig, so the manual patch is removed.
+        bash KernelSU/kernel/setup.sh
+
+        echo "Applying kernel-specific workarounds for n200..."
+        # This stub is required to fix build errors related to missing symbols
+        # (qcom_smem_get, get_project) in this specific kernel source.
         mkdir -p drivers/misc
         cat > drivers/misc/oplus_stubs.c <<'EOC'
         #include <linux/module.h>
@@ -116,38 +139,35 @@ jobs:
         EXPORT_SYMBOL(get_project);
         EOC
         echo "obj-y += oplus_stubs.o" >> drivers/misc/Makefile
+        echo "✅ Integration and patching complete."
 
-    # Build Kernel
+    # Step 7: Build the Kernel
     - name: Build Kernel
       run: |
         make O=out n200_defconfig
         make -j$(nproc) O=out
 
-    # Cache stock boot.img
-    - name: Cache Stock Boot Image
-      id: stockboot-cache
-      uses: actions/cache@v4
-      with:
-        path: stock_boot.img
-        key: stockboot-${{ hashFiles(github.event.inputs.stock_boot_url) }}
-
-    - name: Download Stock Boot Image
-      if: steps.stockboot-cache.outputs.cache-hit != 'true'
+    # Step 8: Package into a Flashable Zip using AnyKernel3
+    - name: Package with AnyKernel3
       run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
-
-    # Repack boot image with AnyKernel3
-    - name: Repack Boot Image with AnyKernel3
-      run: |
+        echo "Cloning AnyKernel3 template..."
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+        
+        echo "Copying compiled kernel image to AnyKernel3 directory..."
         cp out/arch/arm64/boot/Image AnyKernel3/
+        
+        echo "Creating flashable zip..."
         cd AnyKernel3
-        zip -r9 ../KernelSU_kernel.zip ./*
+        # Create a zip archive, excluding the .git directory for a cleaner package
+        zip -r9 ../KernelSU-n200-${{ github.event.inputs.kernelsu_version }}.zip ./* -x ".git/*"
         cd ..
+        echo "✅ Flashable zip created."
 
-    # Upload flashable zip artifact
-    - name: Upload KernelSU Kernel Zip
+    # Step 9: Upload the Flashable Zip as an Artifact
+    - name: Upload Flashable Zip
       uses: actions/upload-artifact@v4
       with:
-        name: KernelSU_kernel
-        path: KernelSU_kernel.zip
+        # Use a more descriptive artifact name
+        name: KernelSU-n200-${{ github.event.inputs.kernelsu_version }}
+        path: KernelSU-n200-${{ github.event.inputs.kernelsu_version }}.zip
+
