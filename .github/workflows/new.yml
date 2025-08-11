@@ -21,8 +21,17 @@ jobs:
           sudo apt-get install -y git wget curl unzip bc bison flex build-essential \
             libncurses5-dev libssl-dev ccache xz-utils python3 python3-pip
 
+      - name: Restore ccache Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       - name: Setup ccache
         run: |
+          mkdir -p ~/.ccache
           echo "max_size = 10G" >> ~/.ccache/ccache.conf
           ccache -M 10G
           ccache -s
@@ -46,7 +55,7 @@ jobs:
           export PATH=$HOME/toolchain/clang-r450784e/bin:$PATH
           export ARCH=arm64
           export SUBARCH=arm64
-          export CC=clang
+          export CC="ccache clang"
           export USE_CCACHE=1
           export CCACHE_DIR=$HOME/.ccache
           export CROSS_COMPILE=aarch64-linux-gnu-
