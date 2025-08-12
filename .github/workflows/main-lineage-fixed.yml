@@ -19,6 +19,10 @@ on:
         description: 'AnyKernel3 branch'
         required: true
         default: 'master'
+      STOCK_BOOT_URL:
+        description: 'URL to stock boot.img for repacking'
+        required: true
+        default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
 
 jobs:
   build_kernel:
@@ -44,7 +48,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt update
-        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip lld llvm clang
+        sudo apt install -y build-essential flex bison libssl-dev libncurses5-dev git ccache lz4 python3 python3-pip lld llvm clang android-sdk-libsparse-utils
 
     - name: Create Toolchain Version File
       run: |
@@ -111,7 +115,37 @@ jobs:
     - name: Build Kernel
       working-directory: kernel
       run: |
-        make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error
+        make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error Image.gz-dtb || {
+          echo "Image.gz-dtb not found, concatenating Image.gz + dtb"
+          cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dtb > out/arch/arm64/boot/Image.gz-dtb
+        }
+
+    - name: Download Stock Boot Image
+      run: |
+        curl -L "${{ github.event.inputs.STOCK_BOOT_URL }}" -o stock_boot.img
+
+    - name: Unpack Stock Boot Image
+      run: |
+        mkdir boot_unpack
+        unpack_bootimg --boot_img stock_boot.img --out boot_unpack
+        ls -la boot_unpack
+
+    - name: Replace Kernel in Boot Image
+      run: |
+        cp kernel/out/arch/arm64/boot/Image.gz-dtb boot_unpack/kernel
+
+    - name: Repack Boot Image
+      run: |
+        mkbootimg \
+          --kernel boot_unpack/kernel \
+          --ramdisk boot_unpack/ramdisk \
+          --base "$(cat boot_unpack/base)" \
+          --pagesize "$(cat boot_unpack/pagesize)" \
+          --kernel_offset "$(cat boot_unpack/kernel_offset)" \
+          --ramdisk_offset "$(cat boot_unpack/ramdisk_offset)" \
+          --tags_offset "$(cat boot_unpack/tags_offset)" \
+          --header_version "$(cat boot_unpack/header_version)" \
+          -o new_boot.img
 
     - name: Prepare AnyKernel3 Zip
       working-directory: AnyKernel3
@@ -119,9 +153,11 @@ jobs:
         cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
         zip -r9 "AnyKernel3-NordN200-KernelSU-${{ github.run_id }}.zip" * -x .git README.md *placeholder
 
-    - name: Upload Artifact
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: NordN200-KernelSU-Kernel
-        path: AnyKernel3/AnyKernel3-NordN200-KernelSU-*.zip
+        name: NordN200-KernelSU
+        path: |
+          AnyKernel3/AnyKernel3-NordN200-KernelSU-*.zip
+          new_boot.img
         retention-days: 7
