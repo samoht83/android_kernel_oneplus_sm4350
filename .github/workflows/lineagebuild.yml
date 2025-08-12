@@ -1,0 +1,97 @@
+name: Build KernelSU-Next Kernel and Repack Boot Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CLANG_CACHE_DIR: ${{ github.workspace }}/clang
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies and build mkbootimg tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git curl unzip python3 gcc-aarch64-linux-gnu jq build-essential
+        git clone --depth=1 https://github.com/google/android_bootable_recovery.git
+        cd android_bootable_recovery/tools/mkbootimg
+        make
+        sudo cp unpackimg mkbootimg /usr/local/bin/
+        cd ../../..
+
+    - name: Setup ccache
+      run: |
+        ccache --max-size=5G
+        ccache --show-stats || true
+
+    - name: Download and extract Clang
+      run: |
+        mkdir -p $CLANG_CACHE_DIR
+        curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-armv7a-linux-gnueabihf.tar.gz \
+          | tar -xz -C $CLANG_CACHE_DIR --strip-components=1
+        echo "$CLANG_CACHE_DIR/bin" >> $GITHUB_PATH
+
+    - name: Setup KernelSU-Next
+      run: |
+        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+
+    - name: Download stock boot.img
+      run: |
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
+
+    - name: Unpack stock boot.img with unpackimg (supports v3 header)
+      run: |
+        mkdir original_boot
+        unpackimg original_boot.img -o original_boot
+        ls -la original_boot
+
+    - name: Build Kernel
+      run: |
+        export ARCH=arm64
+        export SUBARCH=arm64
+        export PATH="$CLANG_CACHE_DIR/bin:$PATH"
+        make O=out vendor/holi-qgki_defconfig
+        make -j$(nproc) O=out \
+          CC=clang \
+          LLVM=1 \
+          LLVM_IAS=1 \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          OBJCOPY=llvm-objcopy \
+          OBJDUMP=llvm-objdump \
+          STRIP=llvm-strip \
+          LD=ld.lld
+
+    - name: Replace kernel in unpacked boot
+      run: |
+        cp out/arch/arm64/boot/Image.gz-dtb original_boot/kernel
+
+    - name: Repack boot.img dynamically with mkbootimg
+      run: |
+        BOOT_TXT=$(find original_boot -name "*bootimg*.txt" | head -n1)
+        echo "Using boot image config: $BOOT_TXT"
+        MKBOOTIMG_ARGS=$(grep -v '^#' "$BOOT_TXT" | tr '\n' ' ')
+        mkbootimg $MKBOOTIMG_ARGS --kernel original_boot/kernel --output boot_kernelsu_next.img
+        ls -lh boot_kernelsu_next.img
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: boot_kernelsu_next
+        path: boot_kernelsu_next.img
+
+    - name: Show ccache stats
+      run: |
+        ccache --show-stats
