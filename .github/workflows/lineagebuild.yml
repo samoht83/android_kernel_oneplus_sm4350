@@ -24,7 +24,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y git ccache curl unzip python3 gcc-aarch64-linux-gnu jq
+        sudo apt-get install -y git ccache curl unzip python3 gcc-aarch64-linux-gnu jq mkbootimg
 
     - name: Setup ccache
       run: |
@@ -42,21 +42,14 @@ jobs:
       run: |
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-    - name: Prepare magiskboot
-      run: |
-        cp tools/magiskboot .
-        chmod +x magiskboot
-        file magiskboot
-        ./magiskboot --help || true
-     
     - name: Download stock boot.img
       run: |
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
 
-    - name: Unpack stock boot.img with magiskboot
+    - name: Unpack stock boot.img with unpack_bootimg
       run: |
         mkdir original_boot
-        ./magiskboot --unpack original_boot.img -o original_boot
+        unpack_bootimg --boot_img original_boot.img --out original_boot
         ls -la original_boot
 
     - name: Build Kernel
@@ -78,11 +71,14 @@ jobs:
 
     - name: Replace kernel in unpacked boot
       run: |
-        cp out/arch/arm64/boot/Image.gz-dtb stock_boot/
+        cp out/arch/arm64/boot/Image.gz-dtb original_boot/kernel
 
-    - name: Repack boot.img with magiskboot
+    - name: Repack boot.img dynamically with mkbootimg
       run: |
-        ./magiskboot repack original_boot -o boot_kernelsu_next.img
+        BOOT_TXT=$(find original_boot -name "*bootimg*.txt" | head -n1)
+        echo "Using boot image config: $BOOT_TXT"
+        MKBOOTIMG_ARGS=$(grep -v '^#' "$BOOT_TXT" | tr '\n' ' ')
+        mkbootimg $MKBOOTIMG_ARGS --kernel original_boot/kernel --output boot_kernelsu_next.img
         ls -lh boot_kernelsu_next.img
 
     - name: Upload artifact
