@@ -62,21 +62,24 @@ jobs:
         ls -la original_boot
 
     - name: Build Kernel
-      run: |
-        export ARCH=arm64
-        export SUBARCH=arm64
-        export PATH="$CLANG_CACHE_DIR/bin:$PATH"
-        make O=out vendor/holi-qgki_defconfig
-        make -j$(nproc) O=out \
-          CC=clang \
-          LLVM=1 \
-          LLVM_IAS=1 \
-          AR=llvm-ar \
-          NM=llvm-nm \
-          OBJCOPY=llvm-objcopy \
-          OBJDUMP=llvm-objdump \
-          STRIP=llvm-strip \
-          LD=ld.lld
+  run: |
+    export ARCH=arm64
+    export SUBARCH=arm64
+    export CROSS_COMPILE=aarch64-linux-gnu-
+    export PATH="$CLANG_CACHE_DIR/bin:$PATH"
+    make O=out vendor/holi-qgki_defconfig
+    make -j$(nproc) O=out \
+      ARCH=arm64 \
+      CROSS_COMPILE=aarch64-linux-gnu- \
+      CC=clang \
+      LLVM=1 \
+      LLVM_IAS=1 \
+      AR=llvm-ar \
+      NM=llvm-nm \
+      OBJCOPY=llvm-objcopy \
+      OBJDUMP=llvm-objdump \
+      STRIP=llvm-strip \
+      LD=ld.lld
 
     - name: Replace kernel in unpacked boot
       run: |
