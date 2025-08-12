@@ -43,4 +43,62 @@ jobs:
       - name: Download and extract Clang
         run: |
           mkdir -p $CLANG_CACHE_DIR
-          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang
+          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-armv7a-linux-gnueabihf.tar.gz \
+            | tar -xz -C $CLANG_CACHE_DIR --strip-components=1
+          echo "$CLANG_CACHE_DIR/bin" >> $GITHUB_PATH
+
+      - name: Setup KernelSU
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+
+      - name: Download stock boot.img
+        run: |
+          curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
+
+      - name: Unpack stock boot.img with unpack_bootimg
+        run: |
+          mkdir original_boot
+          unpack_bootimg --boot_img=original_boot.img --out=original_boot
+          ls -la original_boot
+
+      - name: Build Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export PATH="$CLANG_CACHE_DIR/bin:$PATH"
+          make O=out vendor/holi-qgki_defconfig
+          make -j$(nproc) O=out \
+            ARCH=arm64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CC=clang \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            LD=ld.lld
+
+      - name: Replace kernel in unpacked boot
+        run: |
+          cp out/arch/arm64/boot/Image.gz-dtb original_boot/kernel
+
+      - name: Repack boot.img dynamically with mkbootimg
+        run: |
+          BOOT_TXT=$(find original_boot -name "*bootimg*.txt" | head -n1)
+          echo "Using boot image config: $BOOT_TXT"
+          MKBOOTIMG_ARGS=$(grep -v '^#' "$BOOT_TXT" | tr '\n' ' ')
+          mkbootimg $MKBOOTIMG_ARGS --kernel original_boot/kernel --output boot_kernelsu_next.img
+          ls -lh boot_kernelsu_next.img
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot_kernelsu_next
+          path: boot_kernelsu_next.img
+
+      - name: Show ccache stats
+        run: |
+          ccache --show-stats
