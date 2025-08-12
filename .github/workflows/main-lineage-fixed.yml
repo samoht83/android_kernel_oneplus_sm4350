@@ -14,7 +14,7 @@ on:
       DEFCONFIG:
         description: 'Defconfig name (e.g., holi_defconfig)'
         required: true
-        default: 'holi-qgki_defconfig'
+        default: 'vendor/holi-qgki_defconfig'
       ANYKERNEL3_BRANCH:
         description: 'AnyKernel3 branch'
         required: true
