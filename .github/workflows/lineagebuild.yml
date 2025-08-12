@@ -56,7 +56,7 @@ jobs:
     - name: Unpack stock boot.img with magiskboot
       run: |
         mkdir original_boot
-        ./magiskboot unpack original_boot.img -o original_boot
+        ./magiskboot --unpack original_boot.img -o original_boot
         ls -la original_boot
 
     - name: Build Kernel
