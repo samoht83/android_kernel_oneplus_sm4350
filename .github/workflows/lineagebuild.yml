@@ -47,9 +47,9 @@ jobs:
           | tar -xz -C $CLANG_CACHE_DIR --strip-components=1
         echo "$CLANG_CACHE_DIR/bin" >> $GITHUB_PATH
 
-    - name: Setup KernelSU-Next
+    - name: Setup KernelSU
       run: |
-        curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
     - name: Download stock boot.img
       run: |
