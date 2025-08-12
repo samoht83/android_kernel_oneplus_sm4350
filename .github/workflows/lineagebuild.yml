@@ -20,32 +20,44 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl unzip python3 gcc-aarch64-linux-gnu jq build-essential ccache
+          sudo apt-get install -y git curl unzip python3 python3-pip gcc-aarch64-linux-gnu jq build-essential ccache \
+            bc bison flex libssl-dev libelf-dev cpio kmod rsync
 
-      - name: Download mkbootimg and unpack_bootimg (Python scripts)
+      - name: Setup Python environment and install tools
         run: |
-          curl -L https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/master/mkbootimg.py?format=TEXT | base64 -d > mkbootimg.py
-          chmod +x mkbootimg.py
-          sudo mv mkbootimg.py /usr/local/bin/mkbootimg
-          curl -L https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/master/unpack_bootimg.py?format=TEXT | base64 -d > unpack_bootimg.py
-          chmod +x unpack_bootimg.py
-          sudo mv unpack_bootimg.py /usr/local/bin/unpack_bootimg
+          python3 -m pip install --upgrade pip
+          # Download mkbootimg tools from Android source
+          mkdir -p ~/android-tools
+          cd ~/android-tools
+          curl -L https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/main.tar.gz | tar -xz
+          sudo cp mkbootimg.py /usr/local/bin/mkbootimg
+          sudo cp unpack_bootimg.py /usr/local/bin/unpack_bootimg
+          sudo chmod +x /usr/local/bin/mkbootimg /usr/local/bin/unpack_bootimg
+          # Install required Python dependencies
+          pip3 install construct
 
       - name: Setup ccache
         run: |
+          mkdir -p $CCACHE_DIR
           ccache --max-size=5G
           ccache --show-stats || true
 
       - name: Download and extract Clang
         run: |
           mkdir -p $CLANG_CACHE_DIR
-          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.0-rc2/clang+llvm-21.1.0-rc2-armv7a-linux-gnueabihf.tar.gz \
-            | tar -xz -C $CLANG_CACHE_DIR --strip-components=1
+          # Use proper ARM64 clang for cross-compilation
+          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-aarch64-linux-gnu.tar.xz \
+            | tar -xJ -C $CLANG_CACHE_DIR --strip-components=1
           echo "$CLANG_CACHE_DIR/bin" >> $GITHUB_PATH
+          # Verify clang installation
+          ls -la $CLANG_CACHE_DIR/bin/
 
       - name: Setup KernelSU
         run: |
@@ -54,12 +66,17 @@ jobs:
       - name: Download stock boot.img
         run: |
           curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
+          file original_boot.img
 
-      - name: Unpack stock boot.img with unpack_bootimg
+      - name: Unpack stock boot.img
         run: |
-          mkdir original_boot
-          unpack_bootimg --boot_img=original_boot.img --out=original_boot
-          ls -la original_boot
+          mkdir -p original_boot
+          python3 /usr/local/bin/unpack_bootimg --boot_img=original_boot.img --out=original_boot/
+          ls -la original_boot/
+          # Show boot image info
+          if [ -f original_boot/boot_img_header_* ]; then
+            cat original_boot/boot_img_header_* || echo "No readable header info"
+          fi
 
       - name: Build Kernel
         run: |
@@ -67,11 +84,22 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export PATH="$CLANG_CACHE_DIR/bin:$PATH"
-          make O=out n200_defconfig
+          export LLVM=1
+          export LLVM_IAS=1
+          
+          # Clean previous builds
+          make mrproper || true
+          
+          # Configure kernel
+          make O=out vendor/holi-qgki_defconfig
+          
+          # Build kernel
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CC=clang \
+            HOSTCC=clang \
+            HOSTCXX=clang++ \
             LLVM=1 \
             LLVM_IAS=1 \
             AR=llvm-ar \
@@ -79,26 +107,93 @@ jobs:
             OBJCOPY=llvm-objcopy \
             OBJDUMP=llvm-objdump \
             STRIP=llvm-strip \
-            LD=ld.lld
+            LD=ld.lld \
+            READELF=llvm-readelf \
+            HOSTLD=ld.lld
+
+      - name: Verify kernel build
+        run: |
+          ls -la out/arch/arm64/boot/
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo "Error: Kernel Image.gz not found!"
+            exit 1
+          fi
+          # Check if we have dtb files and create Image.gz-dtb if needed
+          if [ -f out/arch/arm64/boot/dts/vendor/qcom/*.dtb ]; then
+            cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/vendor/qcom/*.dtb > out/arch/arm64/boot/Image.gz-dtb
+          elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "Image.gz-dtb already exists"
+          else
+            echo "Warning: No DTB files found, using Image.gz only"
+            cp out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image.gz-dtb
+          fi
 
       - name: Replace kernel in unpacked boot
         run: |
-          cp out/arch/arm64/boot/Image.gz-dtb original_boot/kernel
+          # Determine which kernel file to use
+          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            KERNEL_FILE=out/arch/arm64/boot/Image.gz-dtb
+          else
+            KERNEL_FILE=out/arch/arm64/boot/Image.gz
+          fi
+          
+          echo "Using kernel file: $KERNEL_FILE"
+          cp "$KERNEL_FILE" original_boot/kernel
+          ls -la original_boot/kernel
 
-      - name: Repack boot.img dynamically with mkbootimg
+      - name: Repack boot.img with mkbootimg
         run: |
-          BOOT_TXT=$(find original_boot -name "*bootimg*.txt" | head -n1)
-          echo "Using boot image config: $BOOT_TXT"
-          MKBOOTIMG_ARGS=$(grep -v '^#' "$BOOT_TXT" | tr '\n' ' ')
-          mkbootimg $MKBOOTIMG_ARGS --kernel original_boot/kernel --output boot_kernelsu_next.img
+          # Try to find boot arguments from unpack_bootimg output
+          cd original_boot
+          
+          # Get boot image parameters
+          KERNEL_OFFSET=$(grep -o 'kernel_offset: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "0x00008000")
+          RAMDISK_OFFSET=$(grep -o 'ramdisk_offset: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "0x01000000")
+          TAGS_OFFSET=$(grep -o 'tags_offset: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "0x00000100")
+          BASE=$(grep -o 'kernel_addr: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 | sed 's/0x00008000$/0x00000000/' || echo "0x00000000")
+          PAGE_SIZE=$(grep -o 'page_size: [0-9]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "4096")
+          CMDLINE=$(grep -o 'cmdline: .*' boot_img_header_* 2>/dev/null | cut -d' ' -f2- || echo "")
+          
+          cd ..
+          
+          echo "Boot image parameters:"
+          echo "Base: $BASE"
+          echo "Kernel offset: $KERNEL_OFFSET"
+          echo "Ramdisk offset: $RAMDISK_OFFSET"
+          echo "Tags offset: $TAGS_OFFSET"
+          echo "Page size: $PAGE_SIZE"
+          echo "Cmdline: $CMDLINE"
+          
+          # Repack boot image
+          python3 /usr/local/bin/mkbootimg \
+            --kernel original_boot/kernel \
+            $([ -f original_boot/ramdisk ] && echo "--ramdisk original_boot/ramdisk" || echo "") \
+            $([ -f original_boot/dtb ] && echo "--dtb original_boot/dtb" || echo "") \
+            $([ -f original_boot/dtbo ] && echo "--dtb_offset $TAGS_OFFSET --dtbo original_boot/dtbo" || echo "") \
+            --base $BASE \
+            --kernel_offset $KERNEL_OFFSET \
+            --ramdisk_offset $RAMDISK_OFFSET \
+            --tags_offset $TAGS_OFFSET \
+            --pagesize $PAGE_SIZE \
+            $([ ! -z "$CMDLINE" ] && echo "--cmdline \"$CMDLINE\"" || echo "") \
+            --output boot_kernelsu_next.img
+            
           ls -lh boot_kernelsu_next.img
+          file boot_kernelsu_next.img
 
-      - name: Upload artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: boot_kernelsu_next
-          path: boot_kernelsu_next.img
+          name: kernelsu-boot-image
+          path: |
+            boot_kernelsu_next.img
+            out/arch/arm64/boot/Image.gz*
+            original_boot/boot_img_header_*
 
-      - name: Show ccache stats
+      - name: Show build summary
         run: |
+          echo "=== Build Summary ==="
+          echo "Kernel build completed successfully"
+          echo "Boot image repacked with KernelSU"
+          echo "Final boot image size: $(stat -c%s boot_kernelsu_next.img) bytes"
           ccache --show-stats
