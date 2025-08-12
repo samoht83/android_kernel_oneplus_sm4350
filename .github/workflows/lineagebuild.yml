@@ -21,10 +21,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Install dependencies
+    - name: Install dependencies and build mkbootimg tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y git ccache curl unzip python3 gcc-aarch64-linux-gnu jq mkbootimg
+        sudo apt-get install -y git curl unzip python3 gcc-aarch64-linux-gnu jq build-essential
+        git clone --depth=1 https://github.com/google/android_bootable_recovery.git
+        cd android_bootable_recovery/tools/mkbootimg
+        make
+        sudo cp unpackimg mkbootimg /usr/local/bin/
+        cd ../../..
 
     - name: Setup ccache
       run: |
@@ -46,10 +51,10 @@ jobs:
       run: |
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
 
-    - name: Unpack stock boot.img with unpack_bootimg
+    - name: Unpack stock boot.img with unpackimg (supports v3 header)
       run: |
         mkdir original_boot
-        unpack_bootimg --boot_img original_boot.img --out original_boot
+        unpackimg original_boot.img -o original_boot
         ls -la original_boot
 
     - name: Build Kernel
