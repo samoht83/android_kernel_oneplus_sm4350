@@ -21,8 +21,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Clean and prepare repository
+        run: |
+          # Remove any problematic submodule references
+          if [ -f .gitmodules ]; then
+            echo "Backing up .gitmodules"
+            cp .gitmodules .gitmodules.bak
+            
+            # Check if KernelSU-Next submodule exists in .gitmodules but has no URL
+            if grep -q "KernelSU-Next" .gitmodules; then
+              if ! grep -A5 "KernelSU-Next" .gitmodules | grep -q "url"; then
+                echo "Removing problematic KernelSU-Next submodule from .gitmodules"
+                sed -i '/\[submodule "KernelSU-Next"\]/,/^$/d' .gitmodules
+              fi
+            fi
+          fi
+          
+          # Clean any existing KernelSU directories
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu
+          
+          # Remove git submodule cache if it exists
+          rm -rf .git/modules/KernelSU-Next .git/modules/KernelSU
+          
+          # Clean git index of submodule references
+          git rm --cached KernelSU-Next 2>/dev/null || true
+          git rm --cached KernelSU 2>/dev/null || true
 
       - name: Install dependencies
         run: |
@@ -61,7 +90,22 @@ jobs:
 
       - name: Setup KernelSU
         run: |
+          # Remove any existing KernelSU directories first
+          rm -rf KernelSU KernelSU-Next drivers/kernelsu
+          
+          # Download and setup KernelSU using the official script
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+          
+          # Verify KernelSU was installed correctly
+          if [ -d "KernelSU" ]; then
+            echo "KernelSU setup completed successfully"
+            ls -la KernelSU/
+          elif [ -d "drivers/kernelsu" ]; then
+            echo "KernelSU installed in drivers/kernelsu"
+            ls -la drivers/kernelsu/
+          else
+            echo "Warning: KernelSU installation may have failed"
+          fi
 
       - name: Download stock boot.img
         run: |
