@@ -135,7 +135,7 @@ jobs:
           make mrproper || true
           
           # Configure kernel
-          make O=out vendor/holi-qgki_defconfig
+          make O=out dre_defconfig
           
           # Build kernel
           make -j$(nproc) O=out \
