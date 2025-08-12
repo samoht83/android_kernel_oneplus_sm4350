@@ -10,7 +10,6 @@ on:
 
 jobs:
   build:
-    name: Build KernelSU-Next by ${{ github.actor }}
     runs-on: ubuntu-22.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -25,7 +24,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y git ccache curl unzip python3
+        sudo apt-get install -y git ccache curl unzip python3 gcc-aarch64-linux-gnu jq
 
     - name: Setup ccache
       run: |
@@ -43,16 +42,16 @@ jobs:
       run: |
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-    - name: Download magiskboot
+    - name: Download magiskboot binary
       run: |
-        curl -LO https://raw.githubusercontent.com/topjohnwu/magiskboot/main/magiskboot
+        curl -L -o magiskboot https://github.com/topjohnwu/magiskboot/releases/latest/download/magiskboot
         chmod +x magiskboot
 
     - name: Download stock boot.img
       run: |
         curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-    - name: Unpack stock boot.img
+    - name: Unpack stock boot.img with magiskboot
       run: |
         mkdir stock_boot
         ./magiskboot unpack stock_boot.img -o stock_boot
@@ -89,3 +88,7 @@ jobs:
       with:
         name: boot_kernelsu_next
         path: boot_kernelsu_next.img
+
+    - name: Show ccache stats
+      run: |
+        ccache --show-stats
