@@ -49,7 +49,7 @@ static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 	} else {
 #ifdef CONFIG_QCOM_MINIDUMP_PANIC_DUMP
 		if (md_meminfo_seq_buf)
-			seq_buf_printf(md_meminfo_seq_buf, "%s : %lld KB\n", s,
+			seq_buf_printf(md_meminfo_seq_buf, "%s : %lu KB\n", s,
 					num << (PAGE_SHIFT - 10));
 #endif
 	}

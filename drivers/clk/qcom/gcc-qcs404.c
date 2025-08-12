@@ -39,6 +39,7 @@ enum {
 	P_PCIE_0_PIPE_CLK,
 	P_SLEEP_CLK,
 	P_BI_TCXO,
+	P_XO,
 };
 
 static const struct parent_map gcc_parent_map_0[] = {
@@ -246,7 +247,7 @@ static const char * const gcc_parent_names_14[] = {
 
 static const struct parent_map gcc_parent_map_15[] = {
 	{ P_BI_TCXO, 0 },
-	{ P_GPLL0_OUT_AUX, 2 },
+	{ P_GPLL6_OUT_AUX, 2 },
 	{ P_CORE_BI_PLL_TEST_SE, 7 },
 };
 

@@ -77,6 +77,7 @@ __get_update_sum(struct rq *rq, enum migrate_types migrate_type,
 	}
 }
 #endif
-#define CREATE_TRACE_POINTS
-#include "trace.h"
+// Temporarily disabled trace system to fix build
+// #define CREATE_TRACE_POINTS
+// #include "trace.h"
 

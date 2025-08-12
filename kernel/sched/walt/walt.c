@@ -206,7 +206,7 @@ early_param("sched_predl", set_sched_predl);
 __read_mostly unsigned int walt_scale_demand_divisor;
 #define scale_demand(d) ((d)/walt_scale_demand_divisor)
 
-#define SCHED_PRINT(arg)        printk_deferred("%s=%llu", #arg, arg)
+#define SCHED_PRINT(arg) printk_deferred("%s=%u", #arg, arg)
 #define STRG(arg)               #arg
 
 static inline void walt_task_dump(struct task_struct *p)
