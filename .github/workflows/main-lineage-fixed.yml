@@ -115,10 +115,20 @@ jobs:
     - name: Build Kernel
       working-directory: kernel
       run: |
-        make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error Image.gz-dtb || {
-          echo "Image.gz-dtb not found, concatenating Image.gz + dtb"
-          cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dtb > out/arch/arm64/boot/Image.gz-dtb
-        }
+        # Build only Image (some trees don't have Image.gz-dtb rule)
+        make -j$(nproc) O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error Image
+        # If Image.gz-dtb exists, keep it. Otherwise, create it.
+        if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+          echo "Creating Image.gz-dtb manually..."
+          gzip -n -f out/arch/arm64/boot/Image
+          DTB_PATH=$(find out/arch/arm64/boot/dts/ -type f -name "*holi*.dtb" | head -n 1)
+          if [ -z "$DTB_PATH" ]; then
+            echo "Error: DTB file for holi not found!"
+            exit 1
+          fi
+          cat out/arch/arm64/boot/Image.gz "$DTB_PATH" > out/arch/arm64/boot/Image.gz-dtb
+        fi
+        ls -lh out/arch/arm64/boot/Image.gz-dtb
 
     - name: Download Stock Boot Image
       run: |
