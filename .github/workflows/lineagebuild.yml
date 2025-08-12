@@ -55,9 +55,9 @@ jobs:
 
     - name: Unpack stock boot.img with magiskboot
       run: |
-        mkdir stock_boot
-        ./magiskboot unpack original_boot.img -o stock_boot
-        ls -la stock_boot
+        mkdir original_boot
+        ./magiskboot unpack original_boot.img -o original_boot
+        ls -la original_boot
 
     - name: Build Kernel
       run: |
@@ -82,7 +82,7 @@ jobs:
 
     - name: Repack boot.img with magiskboot
       run: |
-        ./magiskboot repack stock_boot -o boot_kernelsu_next.img
+        ./magiskboot repack original_boot -o boot_kernelsu_next.img
         ls -lh boot_kernelsu_next.img
 
     - name: Upload artifact
