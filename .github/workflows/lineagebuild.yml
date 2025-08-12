@@ -42,19 +42,21 @@ jobs:
       run: |
         curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
 
-    - name: Download magiskboot binary
+    - name: Download magiskboot binary with verification
       run: |
         curl -L -o magiskboot https://github.com/topjohnwu/magiskboot/releases/latest/download/magiskboot
+        file magiskboot
+        head -5 magiskboot
         chmod +x magiskboot
 
     - name: Download stock boot.img
       run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
 
     - name: Unpack stock boot.img with magiskboot
       run: |
         mkdir stock_boot
-        ./magiskboot unpack stock_boot.img -o stock_boot
+        ./magiskboot unpack original_boot.img -o stock_boot
         ls -la stock_boot
 
     - name: Build Kernel
