@@ -67,7 +67,7 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
           export PATH="$CLANG_CACHE_DIR/bin:$PATH"
-          make O=out vendor/holi-qgki_defconfig
+          make O=out n200_defconfig
           make -j$(nproc) O=out \
             ARCH=arm64 \
             CROSS_COMPILE=aarch64-linux-gnu- \
