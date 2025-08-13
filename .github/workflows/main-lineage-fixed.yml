@@ -12,110 +12,114 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     env:
-      ARCH: arm64
-      SUBARCH: arm64
-      CROSS_COMPILE: aarch64-linux-android-
-      CROSS_COMPILE_ARM32: arm-linux-androideabi-
-      LLVM: 1
-      LLVM_IAS: 1
-      USE_CCACHE: 1
-      CCACHE_COMPILERCHECK: content
       CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.xz
 
     steps:
-    - name: Checkout Kernel Source
-      uses: actions/checkout@v4
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm4350
+          ref: lineage-22.2
+          fetch-depth: 0
 
-    - name: Apply KernelSU Patches
-      run: |
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl unzip python3 ccache lz4 libarchive-tools build-essential libncurses5-dev libssl-dev flex bison
 
-    - name: Fix minstrel_mcs_groups const mismatch
-      run: |
-        sed -i 's/struct mcs_group minstrel_mcs_groups\[/const struct mcs_group minstrel_mcs_groups\[/' net/mac80211/rc80211_minstrel_ht.c
+      - name: Download Clang
+        run: |
+          mkdir -p $HOME/clang-android-14
+          curl -L $CLANG_URL | tar -xJ -C $HOME/clang-android-14
 
-    - name: Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y lld llvm ccache curl tar gzip xz-utils python3 unzip git
+      - name: Enable ccache
+        run: |
+          ccache --max-size=5G
+          ccache --zero-stats
 
-    - name: Cache Android 14 Clang Toolchain
-      id: cache-clang
-      uses: actions/cache@v4
-      with:
-        path: $HOME/clang-android-14
-        key: ${{ runner.os }}-clang-android-14.0.0_r50-${{ hashFiles('**/toolchain_version.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-clang-android-14.0.0_r50-
-          ${{ runner.os }}-clang-
+      - name: Apply KernelSU
+        run: |
+          cd kernel
+          curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
+          cd ..
 
-    - name: Download Android 14 Clang
-      if: steps.cache-clang.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p $HOME/clang-android-14
-        curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50.tar.gz \
-          | tar -xz -C $HOME/clang-android-14
+      - name: Fix minstrel_mcs_groups const mismatch
+        run: |
+          sed -i 's/struct mcs_group minstrel_mcs_groups\[/const struct mcs_group minstrel_mcs_groups\[/' net/mac80211/rc80211_minstrel_ht.c
 
-    - name: Setup Clang PATH
-      run: echo "$HOME/clang-android-14/bin" >> $GITHUB_PATH
+      - name: Patch rc80211_minstrel_exit
+        run: |
+          echo '
+          void rc80211_minstrel_exit(void) {
+              /* Empty stub to satisfy linker */
+          }
+          ' >> net/mac80211/rc80211_minstrel_stub.c
 
-    - name: Download GCC binutils
-      run: |
-        curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" \
-          -o binutils.tar.gz
-        mkdir -p binutils
-        tar -xzf binutils.tar.gz -C binutils
-        rm binutils.tar.gz
+      - name: Configure Kernel
+        run: |
+          export PATH="$HOME/clang-android-14/bin:$PATH"
+          make O=out ARCH=arm64 vendor/holi-qgki_defconfig
 
-    - name: Download mkbootimg
-      run: |
-        MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
-        mkdir -p $HOME/mkbootimg
-        curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
-        echo "$HOME/mkbootimg" >> $GITHUB_PATH
+          # Enable additional kernel configs
+          cd out
+          ../scripts/config --enable TRACEPOINTS
 
-    - name: Enable ccache
-      run: |
-        ccache --max-size=5G
-        ccache --zero-stats
+          # mac80211 minstrel fix
+          ../scripts/config --enable MAC80211
+          ../scripts/config --enable MAC80211_MINSTREL
+          ../scripts/config --enable CFG80211
 
-    - name: Build Kernel
-      run: |
-        export PATH="$HOME/clang-android-14/bin:$PATH"
-        make O=out ARCH=arm64 vendor/holi-qgki_defconfig
-        make -j$(nproc) O=out ARCH=arm64
+          # Qualcomm WALT scheduler + tracepoints
+          ../scripts/config --enable SCHED_WALT
+          ../scripts/config --enable WALT
+          ../scripts/config --enable SCHED_WALT_DEBUG
+          ../scripts/config --enable SCHED_WALT_TRACE
 
-    - name: Download stock boot image
-      run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+          # CPU core control tracepoints
+          ../scripts/config --enable CPU_FREQ_GOV_SCHEDUTIL
+          ../scripts/config --enable CPU_FREQ_GOV_POWERSAVE
+          ../scripts/config --enable CPU_FREQ_GOV_PERFORMANCE
+          ../scripts/config --enable CPU_FREQ_GOV_CONSERVATIVE
+          ../scripts/config --enable CPU_FREQ_GOV_ONDEMAND
 
-    - name: Unpack stock boot image
-      run: |
-        mkdir stock_boot
-        python3 $HOME/mkbootimg/unpack_bootimg.py --boot_img stock_boot.img --out stock_boot
+          # Qualcomm core_ctl
+          ../scripts/config --enable MSM_CORE_CTL
+          ../scripts/config --enable MSM_CORE_CTL_DEBUG
+          ../scripts/config --enable MSM_CORE_CTL_TRACE
 
-    - name: Repack boot image with new kernel
-      run: |
-        cp out/arch/arm64/boot/Image.gz-dtb stock_boot/kernel
-        python3 $HOME/mkbootimg/mkbootimg.py \
-          --kernel stock_boot/kernel \
-          --ramdisk stock_boot/ramdisk \
-          --cmdline "$(cat stock_boot/cmdline)" \
-          --base $(cat stock_boot/base) \
-          --pagesize $(cat stock_boot/pagesize) \
-          --os_version $(cat stock_boot/os_version) \
-          --os_patch_level $(cat stock_boot/os_patch_level) \
-          --output new_boot.img
+          # Regenerate .config
+          make olddefconfig
+          cd ..
 
-    - name: Package with AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3
-        cp new_boot.img AnyKernel3/
-        cd AnyKernel3
-        zip -r9 ../KernelSU_boot.zip .
+      - name: Build Kernel
+        run: |
+          export PATH="$HOME/clang-android-14/bin:$PATH"
+          make -j$(nproc) O=out ARCH=arm64 CC=clang
 
-    - name: Upload KernelSU Boot Image
-      uses: actions/upload-artifact@v4
-      with:
-        name: KernelSU_boot.zip
-        path: KernelSU_boot.zip
+      - name: Download Stock Boot
+        run: |
+          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+
+      - name: Unpack Boot Image
+        run: |
+          mkdir stock_boot
+          (cd stock_boot && unpackbootimg --input ../stock_boot.img --out .)
+
+      - name: Repack Boot Image
+        run: |
+          mkbootimg \
+            --kernel out/arch/arm64/boot/Image.gz \
+            --ramdisk stock_boot/ramdisk \
+            --cmdline "$(cat stock_boot/cmdline)" \
+            --base $(cat stock_boot/base) \
+            --pagesize $(cat stock_boot/pagesize) \
+            --os_version $(cat stock_boot/os_version) \
+            --os_patch_level $(cat stock_boot/os_patch_level) \
+            --output boot-KernelSU.img
+
+      - name: Upload Boot Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-KernelSU
+          path: boot-KernelSU.img
