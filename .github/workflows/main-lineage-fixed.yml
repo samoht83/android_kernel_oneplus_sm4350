@@ -127,13 +127,14 @@ jobs:
         run: |
           curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-      # 8️⃣ Prepare kernel config
+            # 8️⃣ Prepare kernel config
       - name: Build Kernel
-  run: |
-    ccache -M 5G
-    mkdir -p kernel/out
-    make -C kernel O=out vendor/holi_QGKI.config
-    make -j$(nproc) -C kernel O=out
+        run: |
+          ccache -M 5G
+          mkdir -p kernel/out
+          make -C kernel O=out vendor/holi_QGKI.config
+          make -j$(nproc) -C kernel O=out
+
 
 
       # 🔟 Unpack & repack boot image
