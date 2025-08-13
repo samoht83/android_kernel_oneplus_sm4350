@@ -77,22 +77,31 @@ jobs:
           restore-keys: |
             ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
 
-      # 4️⃣ Cache kernel source folder
-      - name: Cache Kernel Source
+      # 4️⃣ Cache kernel source folder (with KernelSU applied)
+      - name: Cache Kernel Source + KernelSU
+        id: cache-kernel
         uses: actions/cache@v4
         with:
           path: kernel
-          key: kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.sha }}
+          key: kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-ksu-v0.9.5-${{ github.sha }}
           restore-keys: |
-            kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
+            kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-ksu-v0.9.5-
 
-      # 5️⃣ Checkout kernel
+      # 5️⃣ Checkout kernel (if not cached)
       - name: Checkout Kernel Source
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: samoht83/android_kernel_oneplus_sm4350
           ref: ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}
           path: kernel
+
+      # 5️⃣a Install KernelSU (if not cached)
+      - name: Install KernelSU
+        if: steps.cache-kernel.outputs.cache-hit != 'true'
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
       # 6️⃣ Cache toolchains and helpers
       - name: Create Toolchain Version File
