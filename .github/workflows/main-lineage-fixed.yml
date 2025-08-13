@@ -135,11 +135,37 @@ jobs:
         run: |
           curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-      # 8️⃣ Prepare kernel config & build
+      # 8️⃣ Set up toolchain paths
+      - name: Setup Toolchain Paths
+        run: |
+          # Find the correct clang version
+          CLANG_VERSION=$(ls toolchains/clang/clang-r* | head -1 | xargs basename)
+          echo "Found Clang version: $CLANG_VERSION"
+          
+          # Set up PATH for toolchains
+          echo "$(pwd)/toolchains/clang/$CLANG_VERSION/bin" >> $GITHUB_PATH
+          echo "$(pwd)/toolchains/binutils/bin" >> $GITHUB_PATH
+          
+          # Verify toolchain setup
+          export PATH="$(pwd)/toolchains/clang/$CLANG_VERSION/bin:$(pwd)/toolchains/binutils/bin:$PATH"
+          which clang
+          which ld.lld
+          which aarch64-linux-android-gcc
+
+      # 9️⃣ Prepare kernel config & build
       - name: Build Kernel
         run: |
           ccache -M 5G
           mkdir -p kernel/out
+          
+          # Set up toolchain paths
+          CLANG_VERSION=$(ls toolchains/clang/clang-r* | head -1 | xargs basename)
+          export PATH="$(pwd)/toolchains/clang/$CLANG_VERSION/bin:$(pwd)/toolchains/binutils/bin:$PATH"
+          
+          # Set up cross compiler paths
+          export CROSS_COMPILE=$(pwd)/toolchains/binutils/bin/aarch64-linux-android-
+          export CROSS_COMPILE_ARM32=$(pwd)/toolchains/binutils/bin/arm-linux-androideabi-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
           
           echo "Looking for suitable kernel config..."
           CONFIG_FOUND=false
@@ -165,16 +191,17 @@ jobs:
           
           if [ "$CONFIG_FOUND" = false ]; then
             echo "No predefined config found, using defconfig"
-            make -C kernel O=out defconfig
+            make -C kernel O=out ARCH=arm64 CC=clang defconfig
           fi
           
           # Enable KernelSU and other necessary options
           echo "CONFIG_KSU=y" >> kernel/out/.config
           
-          make -C kernel O=out olddefconfig
-          make -j$(nproc) -C kernel O=out
+          # Build kernel
+          make -C kernel O=out ARCH=arm64 CC=clang olddefconfig
+          make -j$(nproc) -C kernel O=out ARCH=arm64 CC=clang
 
-      # 9️⃣ Unpack & repack boot image
+      # 🔟 Unpack & repack boot image
       - name: Unpack Stock Boot
         run: |
           mkdir -p boot_unpack
@@ -198,7 +225,7 @@ jobs:
             --header_version "$(cat boot_unpack/header_version)" \
             -o new-boot.img
 
-      # 🔟 Package AnyKernel3 ZIP
+      # 1️⃣1️⃣ Package AnyKernel3 ZIP
       - name: Package AnyKernel3 ZIP
         run: |
           if [ ! -d AnyKernel3 ]; then
@@ -209,7 +236,7 @@ jobs:
           zip -r9 "AnyKernel3-NordN200-KernelSU-$(date +%s).zip" * -x .git README.md *placeholder
           mv *.zip $GITHUB_WORKSPACE/
 
-      # 1️⃣1️⃣ Upload artifact
+      # 1️⃣2️⃣ Upload artifact
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
