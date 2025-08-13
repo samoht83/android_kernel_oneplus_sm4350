@@ -74,11 +74,15 @@ jobs:
           curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
           echo "$HOME/mkbootimg" >> $GITHUB_PATH
 
+      - name: Prepare Kernel Config from configs/vendor/holi_QGKI.config
+        run: |
+          mkdir -p kernel/out
+          cp vendor/holi_QGKI.config kernel/out/.config
+          make O=kernel/out olddefconfig
+
       - name: Build Kernel
         run: |
           ccache -M 5G
-          mkdir -p kernel/out
-          make O=kernel/out vendor/holi-qgki_defconfig
           make -j$(nproc) O=kernel/out
 
       - name: Download & Unpack Stock Boot
