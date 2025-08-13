@@ -34,12 +34,28 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y git curl unzip python3 ccache lz4 libarchive-tools build-essential libncurses5-dev libssl-dev flex bison
 
-    - name: Download Clang & mkbootimg
+    - name: Create Toolchain Version File
       run: |
-        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android-14.0.0_r50/clang-r450784d.tar.xz"
-        mkdir -p $HOME/clang
-        curl -L "$CLANG_URL" | tar -xJ -C $HOME/clang
-        echo "$HOME/clang/bin" >> $GITHUB_PATH
+        mkdir -p build_scripts
+        echo "clang-android-17.0.6-binutils-4.9" > build_scripts/toolchain_version.txt
+
+    - name: Cache Toolchains
+      id: cache-toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          toolchains/clang
+          toolchains/binutils
+        key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
+
+    - name: Download Toolchains
+      if: steps.cache-toolchain.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p toolchains
+        cd toolchains
+        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
+        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 binutils --depth=1
+
 
         MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
         mkdir -p $HOME/mkbootimg
