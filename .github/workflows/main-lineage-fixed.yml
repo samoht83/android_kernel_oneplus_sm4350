@@ -59,6 +59,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y $(cat .github/apt-deps.txt)
 
+      # 2️⃣a Install unpack_bootimg
+      - name: Install unpack_bootimg
+        run: |
+          mkdir -p $HOME/unpack_bootimg
+          curl -L https://github.com/xiaolu/mkbootimg_tools/releases/download/v1.0/unpack_bootimg_linux -o $HOME/unpack_bootimg/unpack_bootimg
+          chmod +x $HOME/unpack_bootimg/unpack_bootimg
+          echo "$HOME/unpack_bootimg" >> $GITHUB_PATH
+
       # 3️⃣ Cache ccache to reuse object files
       - name: Cache ccache
         uses: actions/cache@v4
@@ -127,17 +135,16 @@ jobs:
         run: |
           curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-            # 8️⃣ Prepare kernel config
+      # 8️⃣ Prepare kernel config & build
       - name: Build Kernel
         run: |
           ccache -M 5G
           mkdir -p kernel/out
-          make -C kernel O=out vendor/holi_QGKI.config
+          cp kernel/configs/vendor/holi_QGKI.config kernel/out/.config
+          make -C kernel O=out olddefconfig
           make -j$(nproc) -C kernel O=out
 
-
-
-      # 🔟 Unpack & repack boot image
+      # 9️⃣ Unpack & repack boot image
       - name: Unpack Stock Boot
         run: |
           mkdir -p boot_unpack
@@ -161,7 +168,7 @@ jobs:
             --header_version "$(cat boot_unpack/header_version)" \
             -o new-boot.img
 
-      # 1️⃣1️⃣ Package AnyKernel3 ZIP
+      # 🔟 Package AnyKernel3 ZIP
       - name: Package AnyKernel3 ZIP
         run: |
           if [ ! -d AnyKernel3 ]; then
@@ -172,7 +179,7 @@ jobs:
           zip -r9 "AnyKernel3-NordN200-KernelSU-$(date +%s).zip" * -x .git README.md *placeholder
           mv *.zip $GITHUB_WORKSPACE/
 
-      # 1️⃣2️⃣ Upload artifact
+      # 1️⃣1️⃣ Upload artifact
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
