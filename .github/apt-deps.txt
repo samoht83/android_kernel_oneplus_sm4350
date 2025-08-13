@@ -1,0 +1,11 @@
+curl
+unzip
+python3
+ccache
+lz4
+libarchive-tools
+build-essential
+libncurses5-dev
+libssl-dev
+flex
+bison
