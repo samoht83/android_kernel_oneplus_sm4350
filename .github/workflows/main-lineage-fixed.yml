@@ -4,24 +4,23 @@ on:
   workflow_dispatch:
     inputs:
       stock_boot_url:
-        description: "URL to the stock boot.img for repacking"
+        description: 'URL to the stock boot.img for repacking'
         required: true
-        default: "https://mirrorbits.lineageos.org/full/dre/20250808/boot.img"
+        default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     env:
       ARCH: arm64
       SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-android-
+      CROSS_COMPILE_ARM32: arm-linux-androideabi-
       LLVM: 1
       LLVM_IAS: 1
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
       USE_CCACHE: 1
       CCACHE_COMPILERCHECK: content
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz
-      MKBOOTIMG_URL: https://android.googlesource.com/platform/prebuilts/mkbootimg/+archive/refs/heads/master/linux-x86.tar.gz
 
     steps:
     - name: Checkout Kernel Source
@@ -30,85 +29,68 @@ jobs:
         repository: LineageOS/android_kernel_oneplus_sm4350
         ref: lineage-22.2
 
-    - name: Setup ccache
+    - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y ccache python3
-        ccache --max-size=5G
+        sudo apt-get install -y git curl unzip python3 ccache lz4 libarchive-tools build-essential libncurses5-dev libssl-dev flex bison
 
-    - name: Download Clang Toolchain
+    - name: Download Clang & mkbootimg
       run: |
-        mkdir clang
-        curl -L $CLANG_URL | tar -xz -C clang
-        echo "$PWD/clang/bin" >> $GITHUB_PATH
+        CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android-14.0.0_r50/clang-r450784d.tar.xz"
+        mkdir -p $HOME/clang
+        curl -L "$CLANG_URL" | tar -xJ -C $HOME/clang
+        echo "$HOME/clang/bin" >> $GITHUB_PATH
 
-    - name: Download mkbootimg & unpack_bootimg
-      run: |
-        mkdir mkbootimg_bin
-        curl -L $MKBOOTIMG_URL | tar -xz -C mkbootimg_bin
-        chmod +x mkbootimg_bin/mkbootimg mkbootimg_bin/unpack_bootimg
-        echo "$PWD/mkbootimg_bin" >> $GITHUB_PATH
-
-    - name: Download Stock Boot Image
-      run: |
-        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
-
-    - name: Unpack Stock Boot Image
-      run: |
-        mkdir boot_unpack
-        unpack_bootimg --boot_img stock_boot.img --out boot_unpack
-        echo "Unpacked files:"
-        ls -la boot_unpack || true
+        MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
+        mkdir -p $HOME/mkbootimg
+        curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
+        echo "$HOME/mkbootimg" >> $GITHUB_PATH
 
     - name: Build Kernel
       run: |
-        export PATH="$PWD/clang/bin:$PATH"
+        ccache -M 5G
         mkdir -p kernel/out
         make O=kernel/out vendor/holi-qgki_defconfig
         make -j$(nproc) O=kernel/out
 
-    - name: Find DTB and Create Image.gz-dtb
+    - name: Download & Unpack Stock Boot
       run: |
-        DTB_FILE=$(find kernel/out/arch/arm64/boot/dts/ -type f -name "*holi*.dtb" | head -n1 || true)
-        if [ -z "$DTB_FILE" ]; then
-          echo "Error: DTB for holi not found!"
-          exit 1
-        fi
-        gzip -c kernel/out/arch/arm64/boot/Image > kernel/out/arch/arm64/boot/Image.gz
-        cat kernel/out/arch/arm64/boot/Image.gz "$DTB_FILE" > Image.gz-dtb
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+        mkdir -p boot_unpack
+        unpack_bootimg --boot_img stock_boot.img --out boot_unpack
+        echo "== Unpacked boot.img =="
+        ls -la boot_unpack
 
-    - name: Replace Kernel in Boot Image
+    - name: Replace Kernel & Repack
       run: |
-        cp Image.gz-dtb boot_unpack/kernel
-
-    - name: Repack Boot Image
-      run: |
-        if [ -f boot_unpack/mkbootimg_args ]; then
-          mkbootimg $(cat boot_unpack/mkbootimg_args) --kernel boot_unpack/kernel --output new_boot.img
+        if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb boot_unpack/kernel
         else
-          echo "mkbootimg_args not found — rebuilding manually."
-          mkbootimg \
-            --kernel boot_unpack/kernel \
-            --ramdisk boot_unpack/ramdisk \
-            --base $(cat boot_unpack/base) \
-            --pagesize $(cat boot_unpack/pagesize) \
-            --os_version $(cat boot_unpack/os_version) \
-            --os_patch_level $(cat boot_unpack/os_patch_level) \
-            --header_version $(cat boot_unpack/header_version) \
-            --output new_boot.img
+          echo "No Image.gz-dtb, concatenating..."
+          cat kernel/out/arch/arm64/boot/Image.gz kernel/out/arch/arm64/boot/dts/*.dtb > boot_unpack/kernel
         fi
 
-    - name: Package with AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3
-        cd AnyKernel3
-        cp ../Image.gz-dtb .
-        zip -r9 "../AnyKernel3-NordN200-KernelSU.zip" . -x "*.git*" README.md *placeholder
+        mkbootimg \
+          --kernel boot_unpack/kernel \
+          --ramdisk boot_unpack/ramdisk \
+          --cmdline "$(cat boot_unpack/cmdline)" \
+          --base "$(cat boot_unpack/base)" \
+          --pagesize "$(cat boot_unpack/pagesize)" \
+          --os_version "$(cat boot_unpack/os_version)" \
+          --os_patch_level "$(cat boot_unpack/os_patch_level)" \
+          --header_version "$(cat boot_unpack/header_version)" \
+          -o new-boot.img
 
-    - name: Upload Boot Image & AnyKernel3 Zip
+    - name: Package AnyKernel3 ZIP
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3.git
+        cp new-boot.img AnyKernel3/boot.img
+        cd AnyKernel3
+        zip -r9 "AnyKernel3-NordN200-KernelSU-$(date +%s).zip" * -x .git README.md *placeholder
+        mv *.zip $GITHUB_WORKSPACE/
+
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-output
-        path: |
-          new_boot.img
-          AnyKernel3-NordN200-KernelSU.zip
+        name: AnyKernel3-KernelSU-ZIP
+        path: "*.zip"
