@@ -23,11 +23,20 @@ jobs:
       CCACHE_COMPILERCHECK: content
 
     steps:
-    - name: Checkout Kernel Source
-      uses: actions/checkout@v4
-      with:
-        repository: LineageOS/android_kernel_oneplus_sm4350
-        ref: lineage-22.2
+    - name: Cache Kernel Source
+  uses: actions/cache@v4
+  with:
+    path: kernel
+    key: kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.sha }}
+    restore-keys: |
+      kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
+
+- name: Checkout Kernel Source
+  uses: actions/checkout@v4
+  with:
+    repository: LineageOS/android_kernel_oneplus_sm4350
+    ref: ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}
+    path: kernel
 
     - name: Install Dependencies
       run: |
