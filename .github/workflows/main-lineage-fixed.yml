@@ -27,6 +27,43 @@ jobs:
       CCACHE_COMPILERCHECK: content
 
     steps:
+      # 1️⃣ Cache apt packages
+      - name: Cache APT Packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt
+            /var/lib/apt/lists
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/apt-deps.txt') }}
+
+      # 2️⃣ Install dependencies (list stored in file)
+      - name: Install Dependencies
+        run: |
+          echo "git
+          curl
+          unzip
+          python3
+          ccache
+          lz4
+          libarchive-tools
+          build-essential
+          libncurses5-dev
+          libssl-dev
+          flex
+          bison" > .github/apt-deps.txt
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-deps.txt)
+
+      # 3️⃣ Cache ccache to reuse object files
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
+
+      # 4️⃣ Cache kernel source folder
       - name: Cache Kernel Source
         uses: actions/cache@v4
         with:
@@ -35,6 +72,7 @@ jobs:
           restore-keys: |
             kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
 
+      # 5️⃣ Checkout kernel if not cached
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
@@ -42,66 +80,73 @@ jobs:
           ref: ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}
           path: kernel
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl unzip python3 ccache lz4 libarchive-tools build-essential libncurses5-dev libssl-dev flex bison
-
+      # 6️⃣ Cache toolchains, mkbootimg, AnyKernel3
       - name: Create Toolchain Version File
         run: |
           mkdir -p build_scripts
           echo "clang-android-17.0.6-binutils-4.9" > build_scripts/toolchain_version.txt
 
-      - name: Cache Toolchains
+      - name: Cache Toolchains & Helpers
         id: cache-toolchain
         uses: actions/cache@v4
         with:
           path: |
             toolchains/clang
             toolchains/binutils
+            $HOME/mkbootimg
+            AnyKernel3
           key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
 
-      - name: Download Toolchains
+      - name: Download Toolchains & mkbootimg
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           mkdir -p toolchains
           cd toolchains
           git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
           git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 binutils --depth=1
-
           MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
           mkdir -p $HOME/mkbootimg
           curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
           echo "$HOME/mkbootimg" >> $GITHUB_PATH
 
+      # 7️⃣ Cache stock boot.img
+      - name: Cache Stock Boot
+        uses: actions/cache@v4
+        with:
+          path: stock_boot.img
+          key: stock-boot-${{ github.event.inputs.stock_boot_url }}
+
+      - name: Download Stock Boot
+        if: steps.cache-stock-boot.outputs.cache-hit != 'true'
+        run: |
+          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+
+      # 8️⃣ Prepare kernel config
       - name: Prepare Kernel Config from configs/vendor/holi_QGKI.config
         run: |
           mkdir -p kernel/out
           cp vendor/holi_QGKI.config kernel/out/.config
-          make O=kernel/out olddefconfig
+          make -C kernel O=out olddefconfig
 
+      # 9️⃣ Build kernel
       - name: Build Kernel
         run: |
           ccache -M 5G
-          make -j$(nproc) O=kernel/out
+          make -j$(nproc) -C kernel O=out
 
-      - name: Download & Unpack Stock Boot
+      # 🔟 Unpack & repack boot image
+      - name: Unpack Stock Boot
         run: |
-          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
           mkdir -p boot_unpack
           unpack_bootimg --boot_img stock_boot.img --out boot_unpack
-          echo "== Unpacked boot.img =="
-          ls -la boot_unpack
 
       - name: Replace Kernel & Repack
         run: |
           if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
             cp kernel/out/arch/arm64/boot/Image.gz-dtb boot_unpack/kernel
           else
-            echo "No Image.gz-dtb, concatenating..."
             cat kernel/out/arch/arm64/boot/Image.gz kernel/out/arch/arm64/boot/dts/*.dtb > boot_unpack/kernel
           fi
-
           mkbootimg \
             --kernel boot_unpack/kernel \
             --ramdisk boot_unpack/ramdisk \
@@ -113,14 +158,18 @@ jobs:
             --header_version "$(cat boot_unpack/header_version)" \
             -o new-boot.img
 
+      # 1️⃣1️⃣ Package AnyKernel3 ZIP
       - name: Package AnyKernel3 ZIP
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git
+          if [ ! -d AnyKernel3 ]; then
+            git clone https://github.com/osm0sis/AnyKernel3.git
+          fi
           cp new-boot.img AnyKernel3/boot.img
           cd AnyKernel3
           zip -r9 "AnyKernel3-NordN200-KernelSU-$(date +%s).zip" * -x .git README.md *placeholder
           mv *.zip $GITHUB_WORKSPACE/
 
+      # 1️⃣2️⃣ Upload artifact
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
