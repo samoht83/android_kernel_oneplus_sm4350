@@ -138,19 +138,37 @@ jobs:
       # 8️⃣ Set up toolchain paths
       - name: Setup Toolchain Paths
         run: |
-          # Find the correct clang version
-          CLANG_VERSION=$(ls toolchains/clang/clang-r* | head -1 | xargs basename)
-          echo "Found Clang version: $CLANG_VERSION"
+          # Debug: Check the actual structure of toolchains
+          echo "Toolchain directory structure:"
+          ls -la toolchains/
+          echo "Clang directory structure:"
+          ls -la toolchains/clang/
           
-          # Set up PATH for toolchains
-          echo "$(pwd)/toolchains/clang/$CLANG_VERSION/bin" >> $GITHUB_PATH
-          echo "$(pwd)/toolchains/binutils/bin" >> $GITHUB_PATH
+          # Find clang binary directly
+          CLANG_PATH=$(find toolchains/clang -name "clang" -type f | head -1)
+          if [ -n "$CLANG_PATH" ]; then
+            CLANG_DIR=$(dirname "$CLANG_PATH")
+            echo "Found Clang at: $CLANG_PATH"
+            echo "Clang directory: $CLANG_DIR"
+            echo "$(pwd)/$CLANG_DIR" >> $GITHUB_PATH
+          else
+            echo "Clang not found, trying alternative paths..."
+            # Alternative: look for any bin directory in clang
+            CLANG_BIN=$(find toolchains/clang -name "bin" -type d | head -1)
+            if [ -n "$CLANG_BIN" ]; then
+              echo "Found clang bin at: $CLANG_BIN"
+              echo "$(pwd)/$CLANG_BIN" >> $GITHUB_PATH
+            fi
+          fi
           
-          # Verify toolchain setup
-          export PATH="$(pwd)/toolchains/clang/$CLANG_VERSION/bin:$(pwd)/toolchains/binutils/bin:$PATH"
-          which clang
-          which ld.lld
-          which aarch64-linux-android-gcc
+          # Find binutils path
+          BINUTILS_PATH=$(find toolchains/binutils -name "aarch64-linux-android-gcc" -type f | head -1)
+          if [ -n "$BINUTILS_PATH" ]; then
+            BINUTILS_DIR=$(dirname "$BINUTILS_PATH")
+            echo "Found binutils at: $BINUTILS_PATH"
+            echo "Binutils directory: $BINUTILS_DIR"
+            echo "$(pwd)/$BINUTILS_DIR" >> $GITHUB_PATH
+          fi
 
       # 9️⃣ Prepare kernel config & build
       - name: Build Kernel
@@ -158,13 +176,30 @@ jobs:
           ccache -M 5G
           mkdir -p kernel/out
           
-          # Set up toolchain paths
-          CLANG_VERSION=$(ls toolchains/clang/clang-r* | head -1 | xargs basename)
-          export PATH="$(pwd)/toolchains/clang/$CLANG_VERSION/bin:$(pwd)/toolchains/binutils/bin:$PATH"
+          # Find and set up toolchain paths dynamically
+          CLANG_PATH=$(find toolchains/clang -name "clang" -type f | head -1)
+          BINUTILS_PATH=$(find toolchains/binutils -name "aarch64-linux-android-gcc" -type f | head -1)
           
-          # Set up cross compiler paths
-          export CROSS_COMPILE=$(pwd)/toolchains/binutils/bin/aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=$(pwd)/toolchains/binutils/bin/arm-linux-androideabi-
+          if [ -n "$CLANG_PATH" ]; then
+            CLANG_DIR=$(dirname "$CLANG_PATH")
+            export PATH="$(pwd)/$CLANG_DIR:$PATH"
+            echo "Added clang to PATH: $(pwd)/$CLANG_DIR"
+          fi
+          
+          if [ -n "$BINUTILS_PATH" ]; then
+            BINUTILS_DIR=$(dirname "$BINUTILS_PATH")
+            export PATH="$(pwd)/$BINUTILS_DIR:$PATH"
+            echo "Added binutils to PATH: $(pwd)/$BINUTILS_DIR"
+            export CROSS_COMPILE="$(pwd)/$BINUTILS_DIR/aarch64-linux-android-"
+            export CROSS_COMPILE_ARM32="$(pwd)/$BINUTILS_DIR/arm-linux-androideabi-"
+          fi
+          
+          # Verify tools are available
+          echo "Checking toolchain availability:"
+          which clang || echo "clang not found"
+          which ld.lld || echo "ld.lld not found"
+          which aarch64-linux-android-gcc || echo "aarch64-linux-android-gcc not found"
+          
           export CLANG_TRIPLE=aarch64-linux-gnu-
           
           echo "Looking for suitable kernel config..."
