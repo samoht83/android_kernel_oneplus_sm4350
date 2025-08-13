@@ -156,6 +156,13 @@ jobs:
           # Add toolchains to PATH
           export PATH="$(pwd)/toolchains/clang/bin:$(pwd)/toolchains/binutils:$PATH"
 
+          # Ensure ld.lld exists for kernel build
+          CLANG_BIN_DIR=$(pwd)/toolchains/clang/bin
+          if [ ! -f "$CLANG_BIN_DIR/ld.lld" ]; then
+            echo "Creating symlink ld.lld -> ld"
+            ln -s "$CLANG_BIN_DIR/ld" "$CLANG_BIN_DIR/ld.lld"
+          fi
+
           # Locate kernel config
           CONFIG_FILE=""
           POSSIBLE_CONFIGS=(
