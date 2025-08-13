@@ -165,7 +165,7 @@ jobs:
           fi
 
           # Locate kernel config
-          CONFIG_FILE=""
+          CONFIG_FILE="holi_QGKI.config"
           POSSIBLE_CONFIGS=(
             "configs/vendor/holi_QGKI.config"
             "arch/arm64/configs/vendor/holi_QGKI.config"
