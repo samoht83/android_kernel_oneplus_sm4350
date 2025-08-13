@@ -137,42 +137,42 @@ jobs:
 
       # 8️⃣ Prepare kernel config & build
       - name: Build Kernel
-  run: |
-    ccache -M 5G
-    mkdir -p kernel/out
-    
-    echo "Looking for suitable kernel config..."
-    CONFIG_FOUND=false
-    
-    # List of possible config locations
-    CONFIGS=(
-      "configs/vendor/holi_QGKI.config"
-      "arch/arm64/configs/vendor/holi_QGKI.config" 
-      "arch/arm64/configs/holi_defconfig"
-      "arch/arm64/configs/sm4350_defconfig"
-      "arch/arm64/configs/oneplus_defconfig"
-      "arch/arm64/configs/lineageos_oneplus_nord_n200_defconfig"
-    )
-    
-    for config in "${CONFIGS[@]}"; do
-      if [ -f "kernel/$config" ]; then
-        echo "Found config: $config"
-        cp "kernel/$config" kernel/out/.config
-        CONFIG_FOUND=true
-        break
-      fi
-    done
-    
-    if [ "$CONFIG_FOUND" = false ]; then
-      echo "No predefined config found, using defconfig"
-      make -C kernel O=out defconfig
-    fi
-    
-    # Enable KernelSU and other necessary options
-    echo "CONFIG_KSU=y" >> kernel/out/.config
-    
-    make -C kernel O=out olddefconfig
-    make -j$(nproc) -C kernel O=out
+        run: |
+          ccache -M 5G
+          mkdir -p kernel/out
+          
+          echo "Looking for suitable kernel config..."
+          CONFIG_FOUND=false
+          
+          # List of possible config locations
+          CONFIGS=(
+            "configs/vendor/holi_QGKI.config"
+            "arch/arm64/configs/vendor/holi_QGKI.config" 
+            "arch/arm64/configs/holi_defconfig"
+            "arch/arm64/configs/sm4350_defconfig"
+            "arch/arm64/configs/oneplus_defconfig"
+            "arch/arm64/configs/lineageos_oneplus_nord_n200_defconfig"
+          )
+          
+          for config in "${CONFIGS[@]}"; do
+            if [ -f "kernel/$config" ]; then
+              echo "Found config: $config"
+              cp "kernel/$config" kernel/out/.config
+              CONFIG_FOUND=true
+              break
+            fi
+          done
+          
+          if [ "$CONFIG_FOUND" = false ]; then
+            echo "No predefined config found, using defconfig"
+            make -C kernel O=out defconfig
+          fi
+          
+          # Enable KernelSU and other necessary options
+          echo "CONFIG_KSU=y" >> kernel/out/.config
+          
+          make -C kernel O=out olddefconfig
+          make -j$(nproc) -C kernel O=out
 
       # 9️⃣ Unpack & repack boot image
       - name: Unpack Stock Boot
