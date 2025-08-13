@@ -1,218 +1,114 @@
-name: Build Nord N200 Kernel with KernelSU
+name: Build KernelSU Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
     inputs:
-      KERNEL_SOURCE_BRANCH:
-        description: 'Kernel source branch to use (e.g., lineage-22.2)'
+      stock_boot_url:
+        description: "URL to the stock boot.img for repacking"
         required: true
-        default: 'lineage-22.2'
-      KERNELSU_VERSION:
-        description: 'KernelSU version/branch (e.g., main or v0.9.5)'
-        required: true
-        default: 'v0.9.5'
-      DEFCONFIG:
-        description: 'Defconfig name (e.g., vendor/holi-qgki_defconfig)'
-        required: true
-        default: 'vendor/holi-qgki_defconfig'
-      ANYKERNEL3_BRANCH:
-        description: 'AnyKernel3 branch'
-        required: true
-        default: 'master'
-      STOCK_BOOT_URL:
-        description: 'URL to stock boot.img for repacking'
-        required: true
-        default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
+        default: "https://mirrorbits.lineageos.org/full/dre/20250808/boot.img"
 
 jobs:
-  build_kernel:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      LLVM: 1
+      LLVM_IAS: 1
+      USE_CCACHE: 1
+      CCACHE_COMPILERCHECK: content
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz
+      MKBOOTIMG_URL: https://android.googlesource.com/platform/prebuilts/mkbootimg/+archive/refs/heads/master/linux-x86.tar.gz
 
     steps:
     - name: Checkout Kernel Source
       uses: actions/checkout@v4
       with:
         repository: LineageOS/android_kernel_oneplus_sm4350
-        ref: ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}
-        path: kernel
+        ref: lineage-22.2
 
-    - name: Checkout AnyKernel3
-      uses: actions/checkout@v4
-      with:
-        repository: osm0sis/AnyKernel3
-        ref: ${{ github.event.inputs.ANYKERNEL3_BRANCH }}
-        path: AnyKernel3
-
-    - name: Install Dependencies
+    - name: Setup ccache
       run: |
-        sudo apt update
-        sudo apt install -y \
-          build-essential flex bison libssl-dev libncurses5-dev git \
-          ccache lz4 python3 python3-pip lld llvm clang \
-          android-sdk-libsparse-utils
+        sudo apt-get update
+        sudo apt-get install -y ccache python3
+        ccache --max-size=5G
 
-    - name: Create Toolchain Version File
+    - name: Download Clang Toolchain
       run: |
-        mkdir -p build_scripts
-        echo "clang-android-17.0.6-binutils-4.9" > build_scripts/toolchain_version.txt
+        mkdir clang
+        curl -L $CLANG_URL | tar -xz -C clang
+        echo "$PWD/clang/bin" >> $GITHUB_PATH
 
-    - name: Cache Toolchains
-      id: cache-toolchain
-      uses: actions/cache@v4
-      with:
-        path: |
-          toolchains/clang
-          toolchains/binutils
-        key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
-
-    - name: Download Toolchains
-      if: steps.cache-toolchain.outputs.cache-hit != 'true'
+    - name: Download mkbootimg & unpack_bootimg
       run: |
-        mkdir -p toolchains
-        cd toolchains
-        git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang --depth=1
-        git clone https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 binutils --depth=1
-
-    - name: Set Up Build Environment
-      run: |
-        echo "ARCH=arm64" >> $GITHUB_ENV
-        echo "SUBARCH=arm64" >> $GITHUB_ENV
-        echo "${{ github.workspace }}/toolchains/clang/clang-r*/bin" >> $GITHUB_PATH
-        echo "${{ github.workspace }}/toolchains/binutils/bin" >> $GITHUB_PATH
-        echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
-        echo "CROSS_COMPILE_ARM32=arm-linux-androideabi-" >> $GITHUB_ENV
-        echo "LLVM=1" >> $GITHUB_ENV
-        echo "LLVM_IAS=1" >> $GITHUB_ENV
-        echo "CCACHE_DIR=${{ github.workspace }}/.ccache" >> $GITHUB_ENV
-        echo "USE_CCACHE=1" >> $GITHUB_ENV
-        echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
-        mkdir -p "${{ github.workspace }}/.ccache"
-        ccache -M 20G
-        ccache -z
-
-    - name: Cache ccache
-      uses: actions/cache@v4
-      with:
-        path: ${{ github.workspace }}/.ccache
-        key: ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.event.inputs.DEFCONFIG }}-${{ github.sha }}
-        restore-keys: |
-          ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.event.inputs.DEFCONFIG }}
-
-    - name: Integrate KernelSU
-      working-directory: kernel
-      run: |
-        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ github.event.inputs.KERNELSU_VERSION }}
-
-    - name: Clean Kernel
-      working-directory: kernel
-      run: |
-        make O=out clean
-        make O=out mrproper || true
-
-    - name: Generate Defconfig
-      working-directory: kernel
-      run: |
-        make O=out ${{ github.event.inputs.DEFCONFIG }}
-
-    - name: Build Kernel + DTBs
-      working-directory: kernel
-      run: |
-        # Build vmlinux -> Image and all DTBs
-        make -j"$(nproc)" O=out ARCH=arm64 CC=clang LLVM=1 LLVM_IAS=1 KCFLAGS=-Wno-error Image dtbs
-
-        # If a full Image.gz-dtb wasn't produced, create it
-        if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-          echo "Creating Image.gz-dtb manually..."
-          # Ensure Image.gz exists
-          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
-            gzip -n -f out/arch/arm64/boot/Image
-          fi
-
-          # Collect DTBs (holi/qcom) across common locations
-          DTB_DIRS=()
-          for d in \
-            "out/arch/arm64/boot/dts" \
-            "out/arch/arm64/boot/dts/qcom" \
-            "out/arch/arm64/boot/dts/vendor/qcom" \
-            "out/arch/arm64/boot/dts/vendor"; do
-            [ -d "$d" ] && DTB_DIRS+=("$d")
-          done
-
-          DTB_LIST=$( (for d in "${DTB_DIRS[@]}"; do find "$d" -type f -name "*holi*.dtb" -o -name "*sm4350*.dtb"; done) | sort -u )
-          if [ -z "$DTB_LIST" ]; then
-            # Fallback: take any qcom dtb(s)
-            DTB_LIST=$( (for d in "${DTB_DIRS[@]}"; do find "$d" -type f -name "*.dtb"; done) | sort -u )
-          fi
-
-          if [ -z "$DTB_LIST" ]; then
-            echo "Error: No DTB files found. Did 'make dtbs' succeed?"
-            exit 1
-          fi
-
-          echo "Using DTBs:"
-          echo "$DTB_LIST"
-          cat out/arch/arm64/boot/Image.gz $DTB_LIST > out/arch/arm64/boot/Image.gz-dtb
-        fi
-
-        ls -lh out/arch/arm64/boot/Image* || true
-        file out/arch/arm64/boot/Image.gz-dtb || true
+        mkdir mkbootimg_bin
+        curl -L $MKBOOTIMG_URL | tar -xz -C mkbootimg_bin
+        chmod +x mkbootimg_bin/mkbootimg mkbootimg_bin/unpack_bootimg
+        echo "$PWD/mkbootimg_bin" >> $GITHUB_PATH
 
     - name: Download Stock Boot Image
       run: |
-        curl -L "${{ github.event.inputs.STOCK_BOOT_URL }}" -o stock_boot.img
+        curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
     - name: Unpack Stock Boot Image
       run: |
-        mkdir -p boot_unpack
+        mkdir boot_unpack
         unpack_bootimg --boot_img stock_boot.img --out boot_unpack
         echo "Unpacked files:"
         ls -la boot_unpack || true
-        echo "Header version: $(cat boot_unpack/header_version)"
+
+    - name: Build Kernel
+      run: |
+        export PATH="$PWD/clang/bin:$PATH"
+        mkdir -p kernel/out
+        make O=kernel/out vendor/holi-qgki_defconfig
+        make -j$(nproc) O=kernel/out
+
+    - name: Find DTB and Create Image.gz-dtb
+      run: |
+        DTB_FILE=$(find kernel/out/arch/arm64/boot/dts/ -type f -name "*holi*.dtb" | head -n1 || true)
+        if [ -z "$DTB_FILE" ]; then
+          echo "Error: DTB for holi not found!"
+          exit 1
+        fi
+        gzip -c kernel/out/arch/arm64/boot/Image > kernel/out/arch/arm64/boot/Image.gz
+        cat kernel/out/arch/arm64/boot/Image.gz "$DTB_FILE" > Image.gz-dtb
 
     - name: Replace Kernel in Boot Image
       run: |
-        cp kernel/out/arch/arm64/boot/Image.gz-dtb boot_unpack/kernel
+        cp Image.gz-dtb boot_unpack/kernel
 
-    - name: Repack Boot Image (mkbootimg)
+    - name: Repack Boot Image
       run: |
-        set -euo pipefail
-        ARGS=(--kernel boot_unpack/kernel --ramdisk boot_unpack/ramdisk)
-        # Optional fields if present
-        add_arg() { local n="$1" f="$2"; [ -f "boot_unpack/$f" ] && ARGS+=("$n" "$(cat "boot_unpack/$f")"); }
-        add_file() { local n="$1" f="$2"; [ -f "boot_unpack/$f" ] && ARGS+=("$n" "boot_unpack/$f"); }
+        if [ -f boot_unpack/mkbootimg_args ]; then
+          mkbootimg $(cat boot_unpack/mkbootimg_args) --kernel boot_unpack/kernel --output new_boot.img
+        else
+          echo "mkbootimg_args not found — rebuilding manually."
+          mkbootimg \
+            --kernel boot_unpack/kernel \
+            --ramdisk boot_unpack/ramdisk \
+            --base $(cat boot_unpack/base) \
+            --pagesize $(cat boot_unpack/pagesize) \
+            --os_version $(cat boot_unpack/os_version) \
+            --os_patch_level $(cat boot_unpack/os_patch_level) \
+            --header_version $(cat boot_unpack/header_version) \
+            --output new_boot.img
+        fi
 
-        add_arg --header_version header_version
-        add_arg --pagesize pagesize
-        add_arg --base base
-        add_arg --kernel_offset kernel_offset
-        add_arg --ramdisk_offset ramdisk_offset
-        add_arg --tags_offset tags_offset
-        add_arg --os_version os_version
-        add_arg --os_patch_level os_patch_level
-        add_arg --board board
-        add_arg --cmdline cmdline
-
-        # Some images separate DTB (boot v2)
-        add_file --dtb dtb
-        add_arg  --dtb_offset dtb_offset
-
-        mkbootimg "${ARGS[@]}" -o new_boot.img
-        echo "Repacked boot:"
-        ls -lh new_boot.img
-
-    - name: Prepare AnyKernel3 Zip
-      working-directory: AnyKernel3
+    - name: Package with AnyKernel3
       run: |
-        cp ../kernel/out/arch/arm64/boot/Image.gz-dtb .
-        zip -r9 "AnyKernel3-NordN200-KernelSU-${{ github.run_id }}.zip" * -x .git README.md *placeholder
+        git clone https://github.com/osm0sis/AnyKernel3
+        cd AnyKernel3
+        cp ../Image.gz-dtb .
+        zip -r9 "../AnyKernel3-NordN200-KernelSU.zip" . -x "*.git*" README.md *placeholder
 
-    - name: Upload Artifacts
+    - name: Upload Boot Image & AnyKernel3 Zip
       uses: actions/upload-artifact@v4
       with:
-        name: NordN200-KernelSU
+        name: kernel-output
         path: |
-          AnyKernel3/AnyKernel3-NordN200-KernelSU-*.zip
           new_boot.img
-        retention-days: 7
+          AnyKernel3-NordN200-KernelSU.zip
