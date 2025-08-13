@@ -42,6 +42,7 @@ jobs:
           libncurses5-dev
           libssl-dev
           flex
+          lld
           bison" > .github/apt-deps.txt
 
       # 1️⃣ Cache apt packages
