@@ -1,4 +1,4 @@
-name: Build KernelSU-Next Kernel and Repack Boot Image
+name: Build 2 KernelSU Kernel and Repack Boot Image
 
 on:
   workflow_dispatch:
@@ -7,237 +7,298 @@ on:
         description: 'URL to the stock boot.img for repacking'
         required: true
         default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
+      KERNEL_SOURCE_BRANCH:
+        description: 'Kernel source branch to use'
+        required: true
+        default: 'lineage-22.2'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     env:
+      ARCH: arm64
+      SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-android-
+      CROSS_COMPILE_ARM32: arm-linux-androideabi-
+      LLVM: 1
+      LLVM_IAS: 1
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CLANG_CACHE_DIR: ${{ github.workspace }}/clang
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
+      USE_CCACHE: 1
+      CCACHE_COMPILERCHECK: content
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Clean and prepare repository
+      # 0️⃣ Prepare apt-deps.txt before caching
+      - name: Prepare APT Dependencies List
         run: |
-          # Remove any problematic submodule references
-          if [ -f .gitmodules ]; then
-            echo "Backing up .gitmodules"
-            cp .gitmodules .gitmodules.bak
-            
-            # Check if KernelSU-Next submodule exists in .gitmodules but has no URL
-            if grep -q "KernelSU-Next" .gitmodules; then
-              if ! grep -A5 "KernelSU-Next" .gitmodules | grep -q "url"; then
-                echo "Removing problematic KernelSU-Next submodule from .gitmodules"
-                sed -i '/\[submodule "KernelSU-Next"\]/,/^$/d' .gitmodules
-              fi
+          mkdir -p .github
+          echo "git
+          curl
+          unzip
+          python3
+          ccache
+          lz4
+          libarchive-tools
+          build-essential
+          libncurses5-dev
+          libssl-dev
+          flex
+          bison" > .github/apt-deps.txt
+
+      # 1️⃣ Cache apt packages
+      - name: Cache APT Packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt
+            /var/lib/apt/lists
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/apt-deps.txt') }}
+
+      # 2️⃣ Install dependencies
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $(cat .github/apt-deps.txt)
+
+      # 2️⃣a Install unpack_bootimg
+      - name: Install unpack_bootimg
+        run: |
+          mkdir -p $HOME/unpack_bootimg
+          curl -L https://github.com/xiaolu/mkbootimg_tools/releases/download/v1.0/unpack_bootimg_linux -o $HOME/unpack_bootimg/unpack_bootimg
+          chmod +x $HOME/unpack_bootimg/unpack_bootimg
+          echo "$HOME/unpack_bootimg" >> $GITHUB_PATH
+
+      # 3️⃣ Cache ccache to reuse object files
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
+
+      # 4️⃣ Cache kernel source folder
+      - name: Cache Kernel Source
+        uses: actions/cache@v4
+        with:
+          path: kernel
+          key: kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-${{ github.sha }}
+          restore-keys: |
+            kernel-source-${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}-
+
+      # 5️⃣ Checkout kernel if not cached
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: samoht83/android_kernel_oneplus_sm4350
+          ref: ${{ github.event.inputs.KERNEL_SOURCE_BRANCH }}
+          path: kernel
+
+      # 6️⃣ Cache toolchains, mkbootimg, AnyKernel3
+      - name: Create Toolchain Version File
+        run: |
+          mkdir -p build_scripts
+          echo "clang-android-17.0.6-binutils-4.9" > build_scripts/toolchain_version.txt
+
+      - name: Cache Toolchains & Helpers
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            toolchains/clang
+            toolchains/binutils
+            $HOME/mkbootimg
+            AnyKernel3
+          key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
+
+      - name: Download Toolchains & mkbootimg
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p toolchains
+          cd toolchains
+          
+          # Option: Use Neutron Clang (optimized, smaller download ~200MB)
+          echo "Downloading Neutron Clang (optimized for kernel builds)..."
+          NEUTRON_LATEST=$(curl -s https://api.github.com/repos/Neutron-Toolchains/clang-build-catalogue/releases/latest | grep "tag_name" | cut -d '"' -f 4)
+          curl -L "https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/${NEUTRON_LATEST}/neutron-clang-${NEUTRON_LATEST}.tar.xz" -o neutron-clang.tar.xz
+          mkdir -p clang
+          tar -xf neutron-clang.tar.xz -C clang --strip-components=1
+          rm neutron-clang.tar.xz
+          
+          # Alternative: If Neutron fails, use minimal AOSP clang
+          if [ ! -f "clang/bin/clang" ]; then
+            echo "Neutron failed, downloading minimal AOSP clang..."
+            rm -rf clang
+            curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r522817.tar.gz" -o clang.tar.gz
+            mkdir -p clang
+            tar -xzf clang.tar.gz -C clang
+            rm clang.tar.gz
+          fi
+          
+          # Download GCC for binutils (fallback cross-compiler)
+          echo "Downloading GCC binutils..."
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" -o binutils.tar.gz
+          mkdir -p binutils
+          tar -xzf binutils.tar.gz -C binutils
+          rm binutils.tar.gz
+          
+          # Download mkbootimg
+          MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
+          mkdir -p $HOME/mkbootimg
+          curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
+          echo "$HOME/mkbootimg" >> $GITHUB_PATH
+
+      # 7️⃣ Cache stock boot.img
+      - name: Cache Stock Boot
+        id: cache-stock-boot
+        uses: actions/cache@v4
+        with:
+          path: stock_boot.img
+          key: stock-boot-${{ github.event.inputs.stock_boot_url }}
+
+      - name: Download Stock Boot
+        if: steps.cache-stock-boot.outputs.cache-hit != 'true'
+        run: |
+          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+
+      # 8️⃣ Set up toolchain paths
+      - name: Setup Toolchain Paths
+        run: |
+          # Debug: Check the actual structure of toolchains
+          echo "Toolchain directory structure:"
+          ls -la toolchains/
+          echo "Clang directory structure:"
+          ls -la toolchains/clang/
+          
+          # Find clang binary directly
+          CLANG_PATH=$(find toolchains/clang -name "clang" -type f | head -1)
+          if [ -n "$CLANG_PATH" ]; then
+            CLANG_DIR=$(dirname "$CLANG_PATH")
+            echo "Found Clang at: $CLANG_PATH"
+            echo "Clang directory: $CLANG_DIR"
+            echo "$(pwd)/$CLANG_DIR" >> $GITHUB_PATH
+          else
+            echo "Clang not found, trying alternative paths..."
+            # Alternative: look for any bin directory in clang
+            CLANG_BIN=$(find toolchains/clang -name "bin" -type d | head -1)
+            if [ -n "$CLANG_BIN" ]; then
+              echo "Found clang bin at: $CLANG_BIN"
+              echo "$(pwd)/$CLANG_BIN" >> $GITHUB_PATH
             fi
           fi
           
-          # Clean any existing KernelSU directories
-          rm -rf KernelSU KernelSU-Next drivers/kernelsu
-          
-          # Remove git submodule cache if it exists
-          rm -rf .git/modules/KernelSU-Next .git/modules/KernelSU
-          
-          # Clean git index of submodule references
-          git rm --cached KernelSU-Next 2>/dev/null || true
-          git rm --cached KernelSU 2>/dev/null || true
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git curl unzip python3 python3-pip gcc-aarch64-linux-gnu jq build-essential ccache \
-            bc bison flex libssl-dev libelf-dev cpio kmod rsync
-
-      - name: Setup Python environment and install tools
-        run: |
-          python3 -m pip install --upgrade pip
-          # Download mkbootimg tools from Android source
-          mkdir -p ~/android-tools
-          cd ~/android-tools
-          curl -L https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/main.tar.gz | tar -xz
-          sudo cp mkbootimg.py /usr/local/bin/mkbootimg
-          sudo cp unpack_bootimg.py /usr/local/bin/unpack_bootimg
-          sudo chmod +x /usr/local/bin/mkbootimg /usr/local/bin/unpack_bootimg
-          # Install required Python dependencies
-          pip3 install construct
-
-      - name: Setup ccache
-        run: |
-          mkdir -p $CCACHE_DIR
-          ccache --max-size=5G
-          ccache --show-stats || true
-
-      - name: Download and extract Clang
-        run: |
-          mkdir -p $CLANG_CACHE_DIR
-          # Use proper ARM64 clang for cross-compilation
-          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-aarch64-linux-gnu.tar.xz \
-            | tar -xJ -C $CLANG_CACHE_DIR --strip-components=1
-          echo "$CLANG_CACHE_DIR/bin" >> $GITHUB_PATH
-          # Verify clang installation
-          ls -la $CLANG_CACHE_DIR/bin/
-
-      - name: Setup KernelSU
-        run: |
-          # Remove any existing KernelSU directories first
-          rm -rf KernelSU KernelSU-Next drivers/kernelsu
-          
-          # Download and setup KernelSU using the official script
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
-          
-          # Verify KernelSU was installed correctly
-          if [ -d "KernelSU" ]; then
-            echo "KernelSU setup completed successfully"
-            ls -la KernelSU/
-          elif [ -d "drivers/kernelsu" ]; then
-            echo "KernelSU installed in drivers/kernelsu"
-            ls -la drivers/kernelsu/
-          else
-            echo "Warning: KernelSU installation may have failed"
+          # Find binutils path
+          BINUTILS_PATH=$(find toolchains/binutils -name "aarch64-linux-android-gcc" -type f | head -1)
+          if [ -n "$BINUTILS_PATH" ]; then
+            BINUTILS_DIR=$(dirname "$BINUTILS_PATH")
+            echo "Found binutils at: $BINUTILS_PATH"
+            echo "Binutils directory: $BINUTILS_DIR"
+            echo "$(pwd)/$BINUTILS_DIR" >> $GITHUB_PATH
           fi
 
-      - name: Download stock boot.img
-        run: |
-          curl -L "${{ github.event.inputs.stock_boot_url }}" -o original_boot.img
-          file original_boot.img
-
-      - name: Unpack stock boot.img
-        run: |
-          mkdir -p original_boot
-          python3 /usr/local/bin/unpack_bootimg --boot_img=original_boot.img --out=original_boot/
-          ls -la original_boot/
-          # Show boot image info
-          if [ -f original_boot/boot_img_header_* ]; then
-            cat original_boot/boot_img_header_* || echo "No readable header info"
-          fi
-
+      # 9️⃣ Prepare kernel config & build
       - name: Build Kernel
         run: |
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export PATH="$CLANG_CACHE_DIR/bin:$PATH"
-          export LLVM=1
-          export LLVM_IAS=1
+          ccache -M 5G
+          mkdir -p kernel/out
           
-          # Clean previous builds
-          make mrproper || true
+          # Find and set up toolchain paths dynamically
+          CLANG_PATH=$(find toolchains/clang -name "clang" -type f | head -1)
+          BINUTILS_PATH=$(find toolchains/binutils -name "aarch64-linux-android-gcc" -type f | head -1)
           
-          # Configure kernel
-          make O=out dre_defconfig
+          if [ -n "$CLANG_PATH" ]; then
+            CLANG_DIR=$(dirname "$CLANG_PATH")
+            export PATH="$(pwd)/$CLANG_DIR:$PATH"
+            echo "Added clang to PATH: $(pwd)/$CLANG_DIR"
+          fi
+          
+          if [ -n "$BINUTILS_PATH" ]; then
+            BINUTILS_DIR=$(dirname "$BINUTILS_PATH")
+            export PATH="$(pwd)/$BINUTILS_DIR:$PATH"
+            echo "Added binutils to PATH: $(pwd)/$BINUTILS_DIR"
+            export CROSS_COMPILE="$(pwd)/$BINUTILS_DIR/aarch64-linux-android-"
+            export CROSS_COMPILE_ARM32="$(pwd)/$BINUTILS_DIR/arm-linux-androideabi-"
+          fi
+          
+          # Verify tools are available
+          echo "Checking toolchain availability:"
+          which clang || echo "clang not found"
+          which ld.lld || echo "ld.lld not found"
+          which aarch64-linux-android-gcc || echo "aarch64-linux-android-gcc not found"
+          
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          
+          echo "Looking for suitable kernel config..."
+          CONFIG_FOUND=false
+          
+          # List of possible config locations
+          CONFIGS=(
+            "configs/vendor/holi_QGKI.config"
+            "arch/arm64/configs/vendor/holi_QGKI.config" 
+            "arch/arm64/configs/holi_defconfig"
+            "arch/arm64/configs/sm4350_defconfig"
+            "arch/arm64/configs/oneplus_defconfig"
+            "arch/arm64/configs/lineageos_oneplus_nord_n200_defconfig"
+          )
+          
+          for config in "${CONFIGS[@]}"; do
+            if [ -f "kernel/$config" ]; then
+              echo "Found config: $config"
+              cp "kernel/$config" kernel/out/.config
+              CONFIG_FOUND=true
+              break
+            fi
+          done
+          
+          if [ "$CONFIG_FOUND" = false ]; then
+            echo "No predefined config found, using defconfig"
+            make -C kernel O=out ARCH=arm64 CC=clang defconfig
+          fi
+          
+          # Enable KernelSU and other necessary options
+          echo "CONFIG_KSU=y" >> kernel/out/.config
           
           # Build kernel
-          make -j$(nproc) O=out \
-            ARCH=arm64 \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CC=clang \
-            HOSTCC=clang \
-            HOSTCXX=clang++ \
-            LLVM=1 \
-            LLVM_IAS=1 \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            LD=ld.lld \
-            READELF=llvm-readelf \
-            HOSTLD=ld.lld
+          make -C kernel O=out ARCH=arm64 CC=clang olddefconfig
+          make -j$(nproc) -C kernel O=out ARCH=arm64 CC=clang
 
-      - name: Verify kernel build
+      # 🔟 Unpack & repack boot image
+      - name: Unpack Stock Boot
         run: |
-          ls -la out/arch/arm64/boot/
-          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
-            echo "Error: Kernel Image.gz not found!"
-            exit 1
-          fi
-          # Check if we have dtb files and create Image.gz-dtb if needed
-          if [ -f out/arch/arm64/boot/dts/vendor/qcom/*.dtb ]; then
-            cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dts/vendor/qcom/*.dtb > out/arch/arm64/boot/Image.gz-dtb
-          elif [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Image.gz-dtb already exists"
+          mkdir -p boot_unpack
+          unpack_bootimg --boot_img stock_boot.img --out boot_unpack
+
+      - name: Replace Kernel & Repack
+        run: |
+          if [ -f kernel/out/arch/arm64/boot/Image.gz-dtb ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz-dtb boot_unpack/kernel
           else
-            echo "Warning: No DTB files found, using Image.gz only"
-            cp out/arch/arm64/boot/Image.gz out/arch/arm64/boot/Image.gz-dtb
+            cat kernel/out/arch/arm64/boot/Image.gz kernel/out/arch/arm64/boot/dts/*.dtb > boot_unpack/kernel
           fi
+          mkbootimg \
+            --kernel boot_unpack/kernel \
+            --ramdisk boot_unpack/ramdisk \
+            --cmdline "$(cat boot_unpack/cmdline)" \
+            --base "$(cat boot_unpack/base)" \
+            --pagesize "$(cat boot_unpack/pagesize)" \
+            --os_version "$(cat boot_unpack/os_version)" \
+            --os_patch_level "$(cat boot_unpack/os_patch_level)" \
+            --header_version "$(cat boot_unpack/header_version)" \
+            -o new-boot.img
 
-      - name: Replace kernel in unpacked boot
+      # 1️⃣1️⃣ Package AnyKernel3 ZIP
+      - name: Package AnyKernel3 ZIP
         run: |
-          # Determine which kernel file to use
-          if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            KERNEL_FILE=out/arch/arm64/boot/Image.gz-dtb
-          else
-            KERNEL_FILE=out/arch/arm64/boot/Image.gz
+          if [ ! -d AnyKernel3 ]; then
+            git clone https://github.com/osm0sis/AnyKernel3.git
           fi
-          
-          echo "Using kernel file: $KERNEL_FILE"
-          cp "$KERNEL_FILE" original_boot/kernel
-          ls -la original_boot/kernel
+          cp new-boot.img AnyKernel3/boot.img
+          cd AnyKernel3
+          zip -r9 "AnyKernel3-NordN200-KernelSU-$(date +%s).zip" * -x .git README.md *placeholder
+          mv *.zip $GITHUB_WORKSPACE/
 
-      - name: Repack boot.img with mkbootimg
-        run: |
-          # Try to find boot arguments from unpack_bootimg output
-          cd original_boot
-          
-          # Get boot image parameters
-          KERNEL_OFFSET=$(grep -o 'kernel_offset: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "0x00008000")
-          RAMDISK_OFFSET=$(grep -o 'ramdisk_offset: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "0x01000000")
-          TAGS_OFFSET=$(grep -o 'tags_offset: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "0x00000100")
-          BASE=$(grep -o 'kernel_addr: 0x[0-9a-f]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 | sed 's/0x00008000$/0x00000000/' || echo "0x00000000")
-          PAGE_SIZE=$(grep -o 'page_size: [0-9]*' boot_img_header_* 2>/dev/null | cut -d' ' -f2 || echo "4096")
-          CMDLINE=$(grep -o 'cmdline: .*' boot_img_header_* 2>/dev/null | cut -d' ' -f2- || echo "")
-          
-          cd ..
-          
-          echo "Boot image parameters:"
-          echo "Base: $BASE"
-          echo "Kernel offset: $KERNEL_OFFSET"
-          echo "Ramdisk offset: $RAMDISK_OFFSET"
-          echo "Tags offset: $TAGS_OFFSET"
-          echo "Page size: $PAGE_SIZE"
-          echo "Cmdline: $CMDLINE"
-          
-          # Repack boot image
-          python3 /usr/local/bin/mkbootimg \
-            --kernel original_boot/kernel \
-            $([ -f original_boot/ramdisk ] && echo "--ramdisk original_boot/ramdisk" || echo "") \
-            $([ -f original_boot/dtb ] && echo "--dtb original_boot/dtb" || echo "") \
-            $([ -f original_boot/dtbo ] && echo "--dtb_offset $TAGS_OFFSET --dtbo original_boot/dtbo" || echo "") \
-            --base $BASE \
-            --kernel_offset $KERNEL_OFFSET \
-            --ramdisk_offset $RAMDISK_OFFSET \
-            --tags_offset $TAGS_OFFSET \
-            --pagesize $PAGE_SIZE \
-            $([ ! -z "$CMDLINE" ] && echo "--cmdline \"$CMDLINE\"" || echo "") \
-            --output boot_kernelsu_next.img
-            
-          ls -lh boot_kernelsu_next.img
-          file boot_kernelsu_next.img
-
-      - name: Upload artifacts
+      # 1️⃣2️⃣ Upload artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernelsu-boot-image
-          path: |
-            boot_kernelsu_next.img
-            out/arch/arm64/boot/Image.gz*
-            original_boot/boot_img_header_*
-
-      - name: Show build summary
-        run: |
-          echo "=== Build Summary ==="
-          echo "Kernel build completed successfully"
-          echo "Boot image repacked with KernelSU"
-          echo "Final boot image size: $(stat -c%s boot_kernelsu_next.img) bytes"
-          ccache --show-stats
+          name: AnyKernel3-KernelSU-ZIP
+          path: "*.zip"
