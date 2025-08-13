@@ -27,18 +27,10 @@ jobs:
       CCACHE_COMPILERCHECK: content
 
     steps:
-      # 1️⃣ Cache apt packages
-      - name: Cache APT Packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            /var/cache/apt
-            /var/lib/apt/lists
-          key: apt-${{ runner.os }}-${{ hashFiles('.github/apt-deps.txt') }}
-
-      # 2️⃣ Install dependencies (list stored in file)
-      - name: Install Dependencies
+      # 0️⃣ Prepare apt-deps.txt before caching
+      - name: Prepare APT Dependencies List
         run: |
+          mkdir -p .github
           echo "git
           curl
           unzip
@@ -51,6 +43,19 @@ jobs:
           libssl-dev
           flex
           bison" > .github/apt-deps.txt
+
+      # 1️⃣ Cache apt packages
+      - name: Cache APT Packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt
+            /var/lib/apt/lists
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/apt-deps.txt') }}
+
+      # 2️⃣ Install dependencies
+      - name: Install Dependencies
+        run: |
           sudo apt-get update
           sudo apt-get install -y $(cat .github/apt-deps.txt)
 
@@ -111,6 +116,7 @@ jobs:
 
       # 7️⃣ Cache stock boot.img
       - name: Cache Stock Boot
+        id: cache-stock-boot
         uses: actions/cache@v4
         with:
           path: stock_boot.img
