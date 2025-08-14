@@ -1,9 +1,9 @@
-      - name: Unpack Boot Image
+            - name: Unpack Boot Image
         run: |
           set -euxo pipefail
           mkdir -p stock_boot
           # Capture stdout for fallback parsing
-          unpackbootimg --boot_img stock_boot.img --out stock_boot 2>&1 | tee unpack.log
+          unpack_bootimg --boot_img stock_boot.img --out stock_boot 2>&1 | tee unpack.log
 
           echo "=== Checking for header.json ==="
           if [ -f stock_boot/header.json ]; then
@@ -38,18 +38,19 @@
             get_val() { grep -m1 "$1" unpack.log | awk '{print $NF}'; }
             get_str() { grep -m1 "$1" unpack.log | sed -E 's/^[^:]+: //'; }
 
-            HVER=3
-            OS_VER=$(get_val "os_version") || OS_VER=""
-            OS_PATCH=$(get_val "os_patch_level") || OS_PATCH=""
-            PAGESIZE=$(get_val "page_size") || PAGESIZE=4096
-            BASE=$(get_val "base") || BASE=0
-            BOARD=$(get_str "board name") || BOARD=""
-            CMDLINE=$(get_str "cmdline") || CMDLINE=""
-            TAGS_OFFSET=$(get_val "tags_offset") || TAGS_OFFSET=""
-            RAMDISK_OFFSET=$(get_val "ramdisk_offset") || RAMDISK_OFFSET=""
-            KERNEL_OFFSET=$(get_val "kernel_offset") || KERNEL_OFFSET=""
-            SECOND_OFFSET=$(get_val "second_offset") || SECOND_OFFSET=""
-            DTB_OFFSET=$(get_val "dtb_offset") || DTB_OFFSET=""
+            HVER=$(get_val "boot image header version:") || HVER=3
+            OS_VER=$(get_val "os version:") || OS_VER=""
+            OS_PATCH=$(get_val "os patch level:") || OS_PATCH=""
+            PAGESIZE=$(get_val "page size:") || PAGESIZE=4096
+            BASE=$(get_val "base:") || BASE=0
+            BOARD=$(get_str "board name:") || BOARD=""
+            CMDLINE=$(get_str "command line args:") || CMDLINE=""
+            RAMDISK_OFFSET=$(get_val "ramdisk offset:") || RAMDISK_OFFSET=""
+            KERNEL_OFFSET=$(get_val "kernel offset:") || KERNEL_OFFSET=""
+            SECOND_OFFSET=$(get_val "second offset:") || SECOND_OFFSET=""
+            DTB_OFFSET=$(get_val "dtb offset:") || DTB_OFFSET=""
+            
+            TAGS_OFFSET=$(get_val "tags offset:") || TAGS_OFFSET=""
           fi
 
           KERNEL_IMG=out/arch/arm64/boot/Image.gz
@@ -81,6 +82,7 @@
 
           echo "Repacked boot image:"
           ls -lah boot-KernelSU.img
+
 
       - name: Upload repacked boot image
         uses: actions/upload-artifact@v4
