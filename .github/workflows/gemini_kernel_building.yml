@@ -146,7 +146,7 @@ jobs:
         run: |
           curl -Lf "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-            - name: Unpack Boot Image
+      - name: Unpack Boot Image
         run: |
           set -euxo pipefail
           mkdir -p stock_boot
