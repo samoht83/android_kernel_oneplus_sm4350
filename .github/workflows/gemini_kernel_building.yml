@@ -85,8 +85,6 @@ jobs:
         run: |
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
-      - name: Fix mac80211 minstrel const mismatch
-        run: sed -i 's/struct mcs_group minstrel_mcs_groups\[/const struct mcs_group minstrel_mcs_groups\[/' net/mac80211/rc80211_minstrel_ht.c
 
       - name: Patch rc80211_minstrel_exit
         run: |
