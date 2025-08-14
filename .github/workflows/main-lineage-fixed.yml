@@ -21,7 +21,7 @@ jobs:
         with:
           repository: LineageOS/android_kernel_oneplus_sm4350
           ref: lineage-22.2
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install Dependencies
         run: |
