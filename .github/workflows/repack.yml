@@ -1,3 +1,19 @@
+name: Gemini repack
+
+on:
+  workflow_dispatch:
+    inputs:
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+      steps:
+
       - name: Unpack Boot Image
         run: |
           set -euxo pipefail
