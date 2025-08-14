@@ -97,9 +97,9 @@ jobs:
           ccache --zero-stats
 
       - name: Apply KernelSU
-        run: |
+         run: |
           # Already at repo root; do NOT "cd kernel"
-         curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
 
       - name: Fix minstrel_mcs_groups const mismatch
         run: |
