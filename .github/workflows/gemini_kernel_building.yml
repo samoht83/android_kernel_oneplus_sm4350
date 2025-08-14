@@ -182,7 +182,7 @@ jobs:
           # These offsets aren't always in the output, so handle them carefully
           TAGS_OFFSET=$(get_val "tags offset:") || TAGS_OFFSET=""
 
-          KERNEL_IMG=out/arch/arm64/boot/Image.gz
+          KERNEL_IMG=out/arch/arm64/boot/Image
           test -f "$KERNEL_IMG" || { echo "Kernel image missing: $KERNEL_IMG"; exit 1; }
 
           MKARGS=( --header_version "$HVER"
