@@ -1,4 +1,4 @@
-            - name: Unpack Boot Image
+      - name: Unpack Boot Image
         run: |
           set -euxo pipefail
           mkdir -p stock_boot
