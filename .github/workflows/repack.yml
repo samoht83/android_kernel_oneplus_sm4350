@@ -1,0 +1,83 @@
+- name: Unpack Boot Image
+        run: |
+          set -euxo pipefail
+          mkdir -p stock_boot
+          # Capture stdout for fallback parsing
+          unpackbootimg --boot_img stock_boot.img --out stock_boot 2>&1 | tee unpack.log
+
+          echo "=== Checking for header.json ==="
+          if [ -f stock_boot/header.json ]; then
+            echo "Found header.json:"
+            cat stock_boot/header.json
+          else
+            echo "No header.json found — will parse unpack.log"
+          fi
+          ls -lah stock_boot
+
+      - name: Repack Boot Image
+        run: |
+          set -euxo pipefail
+          HDR=stock_boot/header.json
+
+          if [ -f "$HDR" ]; then
+            echo "Using header.json values..."
+            HVER=$(jq -r '.header_version // 0' "$HDR")
+            OS_VER=$(jq -r '.os_version // empty' "$HDR")
+            OS_PATCH=$(jq -r '.os_patch_level // empty' "$HDR")
+            PAGESIZE=$(jq -r '.pagesize // 4096' "$HDR")
+            BASE=$(jq -r '.base // 0' "$HDR")
+            BOARD=$(jq -r '.board // empty' "$HDR")
+            CMDLINE=$(jq -r '.cmdline // empty' "$HDR")
+            TAGS_OFFSET=$(jq -r '.tags_offset // empty' "$HDR")
+            RAMDISK_OFFSET=$(jq -r '.ramdisk_offset // empty' "$HDR")
+            KERNEL_OFFSET=$(jq -r '.kernel_offset // empty' "$HDR")
+            SECOND_OFFSET=$(jq -r '.second_offset // empty' "$HDR")
+            DTB_OFFSET=$(jq -r '.dtb_offset // empty' "$HDR")
+          else
+            echo "Parsing unpack.log for boot parameters..."
+            get_val() { grep -m1 "$1" unpack.log | awk '{print $NF}'; }
+            get_str() { grep -m1 "$1" unpack.log | sed -E 's/^[^:]+: //'; }
+
+            HVER=3
+            OS_VER=$(get_val "os_version") || OS_VER=""
+            OS_PATCH=$(get_val "os_patch_level") || OS_PATCH=""
+            PAGESIZE=$(get_val "page_size") || PAGESIZE=4096
+            BASE=$(get_val "base") || BASE=0
+            BOARD=$(get_str "board name") || BOARD=""
+            CMDLINE=$(get_str "cmdline") || CMDLINE=""
+            TAGS_OFFSET=$(get_val "tags_offset") || TAGS_OFFSET=""
+            RAMDISK_OFFSET=$(get_val "ramdisk_offset") || RAMDISK_OFFSET=""
+            KERNEL_OFFSET=$(get_val "kernel_offset") || KERNEL_OFFSET=""
+            SECOND_OFFSET=$(get_val "second_offset") || SECOND_OFFSET=""
+            DTB_OFFSET=$(get_val "dtb_offset") || DTB_OFFSET=""
+          fi
+
+          KERNEL_IMG=out/arch/arm64/boot/Image.gz
+          test -f "$KERNEL_IMG" || { echo "Kernel image missing: $KERNEL_IMG"; exit 1; }
+
+          MKARGS=( --header_version "$HVER"
+                   --kernel "$KERNEL_IMG"
+                   --ramdisk stock_boot/ramdisk
+                   --pagesize "$PAGESIZE"
+                   --output boot-KernelSU.img )
+
+          [ -n "$CMDLINE" ] && MKARGS+=( --cmdline "$CMDLINE" )
+          [ -n "$OS_VER" ] && MKARGS+=( --os_version "$OS_VER" )
+          [ -n "$OS_PATCH" ] && MKARGS+=( --os_patch_level "$OS_PATCH" )
+          [ "$BASE" != "0" ] && MKARGS+=( --base "$BASE" )
+          [ -n "$BOARD" ] && MKARGS+=( --board "$BOARD" )
+          [ -n "$TAGS_OFFSET" ] && MKARGS+=( --tags_offset "$TAGS_OFFSET" )
+          [ -n "$RAMDISK_OFFSET" ] && MKARGS+=( --ramdisk_offset "$RAMDISK_OFFSET" )
+          [ -n "$KERNEL_OFFSET" ] && MKARGS+=( --kernel_offset "$KERNEL_OFFSET" )
+          [ -n "$SECOND_OFFSET" ] && MKARGS+=( --second_offset "$SECOND_OFFSET" )
+          [ -n "$DTB_OFFSET" ] && MKARGS+=( --dtb_offset "$DTB_OFFSET" )
+          if [ -f stock_boot/dtb ]; then
+            MKARGS+=( --dtb stock_boot/dtb )
+          fi
+
+          echo "Running mkbootimg with:"
+          printf '  %q\n' "${MKARGS[@]}"
+          mkbootimg "${MKARGS[@]}"
+
+          echo "Repacked boot image:"
+          ls -lah boot-KernelSU.img
