@@ -11,9 +11,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-
-      steps:
-
+    steps:
       - name: Unpack Boot Image
         run: |
           set -euxo pipefail
