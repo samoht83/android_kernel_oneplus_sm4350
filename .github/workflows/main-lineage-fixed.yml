@@ -28,10 +28,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git curl unzip python3 ccache lz4 libarchive-tools build-essential libncurses5-dev libssl-dev flex bison
 
-      - name: Download Clang
+      - name: Cache Toolchains & Helpers
+        id: cache-toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            toolchains/clang
+            toolchains/binutils
+            $HOME/mkbootimg
+            AnyKernel3
+          key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
+
+      # 7️⃣ Download Toolchains & mkbootimg (if not cached)
+      - name: Download Toolchains & mkbootimg
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          mkdir -p $HOME/clang-android-14
-          curl -L $CLANG_URL | tar -xJ -C $HOME/clang-android-14
+          mkdir -p toolchains/clang toolchains/binutils
+
+          echo "Downloading minimal AOSP Clang..."
+          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz"
+          curl -L "$CLANG_URL" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C toolchains/clang --strip-components=1
+          rm clang.tar.gz
+
+          echo "Downloading GCC binutils..."
+          GCC_URL="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz"
+          curl -L "$GCC_URL" -o binutils.tar.gz
+          tar -xzf binutils.tar.gz -C toolchains/binutils --strip-components=1
+          rm binutils.tar.gz
+
+          echo "Downloading mkbootimg..."
+          MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
+          mkdir -p $HOME/mkbootimg
+          curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
+          echo "$HOME/mkbootimg" >> $GITHUB_PATH
 
       - name: Enable ccache
         run: |
