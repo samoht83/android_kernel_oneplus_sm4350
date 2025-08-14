@@ -45,30 +45,33 @@ jobs:
             toolchain-
 
       - name: Cache Android 14 Clang Toolchain
-      id: cache-clang
-      uses: actions/cache@v4
-      with:
-        path: $HOME/clang-android-14
-        key: ${{ runner.os }}-clang-android-14.0.0_r50-${{ hashFiles('**/toolchain_version.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-clang-android-14.0.0_r50-
-          ${{ runner.os }}-clang-
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: $HOME/clang-android-14
+          key: ${{ runner.os }}-clang-android-14.0.0_r50-${{ hashFiles('**/toolchain_version.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-clang-android-14.0.0_r50-
+            ${{ runner.os }}-clang-
+            
       - name: Download Android 14 Clang
-      if: steps.cache-clang.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p $HOME/clang-android-14
-        curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50.tar.gz \
-          | tar -xz -C $HOME/clang-android-14
-    - name: Setup Clang PATH
-      run: echo "$HOME/clang-android-14/bin" >> $GITHUB_PATH
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p $HOME/clang-android-14
+          curl -L https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50.tar.gz \
+            | tar -xz -C $HOME/clang-android-14
 
-    - name: Download GCC binutils
-      run: |
-        curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" \
-          -o binutils.tar.gz
-        mkdir -p binutils
-        tar -xzf binutils.tar.gz -C binutils
-        rm binutils.tar.gz
+      - name: Setup Clang PATH
+        run: echo "$HOME/clang-android-14/bin" >> $GITHUB_PATH
+
+      - name: Download GCC binutils and mkbootimg scripts
+        run: |
+          echo "Fetching GCC binutils..."
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" \
+            -o binutils.tar.gz
+          mkdir -p binutils
+          tar -xzf binutils.tar.gz -C binutils
+          rm binutils.tar.gz
 
           echo "Fetching mkbootimg/unpack_bootimg scripts..."
           MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
@@ -78,13 +81,13 @@ jobs:
           # Create simple shims so we can call them like binaries
           sudo bash -lc 'cat > /usr/local/bin/mkbootimg <<EOF
           #!/usr/bin/env bash
-          exec python3 "$HOME/mkbootimg/mkbootimg.py" "\$@"
+          exec python3 "$HOME/mkbootimg/mkbootimg.py" "$@"
           EOF
           chmod +x /usr/local/bin/mkbootimg'
 
           sudo bash -lc 'cat > /usr/local/bin/unpackbootimg <<EOF
           #!/usr/bin/env bash
-          exec python3 "$HOME/mkbootimg/unpack_bootimg.py" "\$@"
+          exec python3 "$HOME/mkbootimg/unpack_bootimg.py" "$@"
           EOF
           chmod +x /usr/local/bin/unpackbootimg'
 
@@ -117,7 +120,7 @@ jobs:
           set -euxo pipefail
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$TOOLCHAIN/bin:$PATH"
+          export PATH="$HOME/clang-android-14/bin:$PATH"
 
           # LLVM mode (clang/ld.lld/llvm tools)
           export LLVM=1
@@ -159,13 +162,11 @@ jobs:
           cd ..
 
       - name: Build Kernel
-        env:
-          TOOLCHAIN: ${{ github.workspace }}/toolchains/clang
         run: |
           set -euxo pipefail
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH="$TOOLCHAIN/bin:$PATH"
+          export PATH="$HOME/clang-android-14/bin:$PATH"
           export LLVM=1
           export LLVM_IAS=1
           # Use ccache with clang
