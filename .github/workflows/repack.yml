@@ -81,3 +81,9 @@
 
           echo "Repacked boot image:"
           ls -lah boot-KernelSU.img
+
+      - name: Upload repacked boot image
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-KernelSU
+          path: boot-KernelSU.img
