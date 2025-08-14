@@ -26,7 +26,10 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl unzip python3 ccache lz4 libarchive-tools build-essential libncurses5-dev libssl-dev flex bison
+          sudo apt-get install -y \
+            git curl unzip python3 python3-venv jq ccache lz4 \
+            libarchive-tools build-essential libncurses5-dev libssl-dev flex bison \
+            libelf-dev bc dwarves
 
       - name: Cache Toolchains & Helpers
         id: cache-toolchain
@@ -34,34 +37,40 @@ jobs:
         with:
           path: |
             toolchains/clang
-            toolchains/binutils
             $HOME/mkbootimg
-            AnyKernel3
-          key: toolchain-${{ hashFiles('build_scripts/toolchain_version.txt') }}
+            /usr/local/bin/mkbootimg
+            /usr/local/bin/unpackbootimg
+          key: toolchain-${{ env.CLANG_URL }}
+          restore-keys: |
+            toolchain-
 
-      # 7️⃣ Download Toolchains & mkbootimg (if not cached)
-      - name: Download Toolchains & mkbootimg
+      - name: Download Clang & mkbootimg (if not cached)
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          mkdir -p toolchains/clang toolchains/binutils
+          set -euxo pipefail
+          mkdir -p toolchains/clang
+          echo "Downloading Android 14 r50 Clang..."
+          curl -L "$CLANG_URL" -o clang.tar.xz
+          tar -xJf clang.tar.xz -C toolchains/clang
+          rm clang.tar.xz
 
-          echo "Downloading minimal AOSP Clang..."
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz"
-          curl -L "$CLANG_URL" -o clang.tar.gz
-          tar -xzf clang.tar.gz -C toolchains/clang --strip-components=1
-          rm clang.tar.gz
-
-          echo "Downloading GCC binutils..."
-          GCC_URL="https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz"
-          curl -L "$GCC_URL" -o binutils.tar.gz
-          tar -xzf binutils.tar.gz -C toolchains/binutils --strip-components=1
-          rm binutils.tar.gz
-
-          echo "Downloading mkbootimg..."
+          echo "Fetching mkbootimg/unpack_bootimg scripts..."
           MKBOOTIMG_URL="https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz"
-          mkdir -p $HOME/mkbootimg
-          curl -L "$MKBOOTIMG_URL" | tar -xz -C $HOME/mkbootimg
-          echo "$HOME/mkbootimg" >> $GITHUB_PATH
+          mkdir -p "$HOME/mkbootimg"
+          curl -L "$MKBOOTIMG_URL" | tar -xz -C "$HOME/mkbootimg"
+
+          # Create simple shims so we can call them like binaries
+          sudo bash -lc 'cat > /usr/local/bin/mkbootimg <<EOF
+          #!/usr/bin/env bash
+          exec python3 "$HOME/mkbootimg/mkbootimg.py" "\$@"
+          EOF
+          chmod +x /usr/local/bin/mkbootimg'
+
+          sudo bash -lc 'cat > /usr/local/bin/unpackbootimg <<EOF
+          #!/usr/bin/env bash
+          exec python3 "$HOME/mkbootimg/unpack_bootimg.py" "\$@"
+          EOF
+          chmod +x /usr/local/bin/unpackbootimg'
 
       - name: Enable ccache
         run: |
@@ -70,9 +79,8 @@ jobs:
 
       - name: Apply KernelSU
         run: |
-          cd kernel
+          # Already at repo root; do NOT "cd kernel"
           curl -LSs https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh | bash -
-          cd ..
 
       - name: Fix minstrel_mcs_groups const mismatch
         run: |
@@ -80,18 +88,31 @@ jobs:
 
       - name: Patch rc80211_minstrel_exit
         run: |
-          echo '
+          cat >> net/mac80211/rc80211_minstrel_stub.c <<'EOF'
           void rc80211_minstrel_exit(void) {
               /* Empty stub to satisfy linker */
           }
-          ' >> net/mac80211/rc80211_minstrel_stub.c
+          EOF
 
       - name: Configure Kernel
+        env:
+          TOOLCHAIN: ${{ github.workspace }}/toolchains/clang
         run: |
-          export PATH="$HOME/clang-android-14/bin:$PATH"
+          set -euxo pipefail
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$TOOLCHAIN/bin:$PATH"
+
+          # LLVM mode (clang/ld.lld/llvm tools)
+          export LLVM=1
+          export LLVM_IAS=1
+          # Cross triples for 64-bit and 32-bit compat VDSO if needed
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+
           make O=out ARCH=arm64 vendor/holi-qgki_defconfig
 
-          # Enable additional kernel configs
+          # Additional toggles
           cd out
           ../scripts/config --enable TRACEPOINTS
 
@@ -106,7 +127,7 @@ jobs:
           ../scripts/config --enable SCHED_WALT_DEBUG
           ../scripts/config --enable SCHED_WALT_TRACE
 
-          # CPU core control tracepoints
+          # CPU freq governors (optional, for tracing flexibility)
           ../scripts/config --enable CPU_FREQ_GOV_SCHEDUTIL
           ../scripts/config --enable CPU_FREQ_GOV_POWERSAVE
           ../scripts/config --enable CPU_FREQ_GOV_PERFORMANCE
@@ -118,35 +139,89 @@ jobs:
           ../scripts/config --enable MSM_CORE_CTL_DEBUG
           ../scripts/config --enable MSM_CORE_CTL_TRACE
 
-          # Regenerate .config
           make olddefconfig
           cd ..
 
       - name: Build Kernel
+        env:
+          TOOLCHAIN: ${{ github.workspace }}/toolchains/clang
         run: |
-          export PATH="$HOME/clang-android-14/bin:$PATH"
-          make -j$(nproc) O=out ARCH=arm64 CC=clang
+          set -euxo pipefail
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$TOOLCHAIN/bin:$PATH"
+          export LLVM=1
+          export LLVM_IAS=1
+          # Use ccache with clang
+          export CC="ccache clang"
+          make -j"$(nproc)" O=out ARCH=arm64 CC=clang
+
+          echo "ccache stats after build:"
+          ccache --show-stats || true
 
       - name: Download Stock Boot
         run: |
-          curl -L "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
+          curl -Lf "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
       - name: Unpack Boot Image
         run: |
-          mkdir stock_boot
-          (cd stock_boot && unpackbootimg --input ../stock_boot.img --out .)
+          set -euxo pipefail
+          mkdir -p stock_boot
+          unpackbootimg --boot_img stock_boot.img --out stock_boot
+
+          echo "Unpacked header:"
+          cat stock_boot/header.json || true
+          ls -lah stock_boot
 
       - name: Repack Boot Image
         run: |
-          mkbootimg \
-            --kernel out/arch/arm64/boot/Image.gz \
-            --ramdisk stock_boot/ramdisk \
-            --cmdline "$(cat stock_boot/cmdline)" \
-            --base $(cat stock_boot/base) \
-            --pagesize $(cat stock_boot/pagesize) \
-            --os_version $(cat stock_boot/os_version) \
-            --os_patch_level $(cat stock_boot/os_patch_level) \
-            --output boot-KernelSU.img
+          set -euxo pipefail
+          # Extract header params from AOSP header.json
+          HDR=stock_boot/header.json
+          HVER=$(jq -r '.header_version // 0' "$HDR")
+          OS_VER=$(jq -r '.os_version // empty' "$HDR")
+          OS_PATCH=$(jq -r '.os_patch_level // empty' "$HDR")
+          PAGESIZE=$(jq -r '.pagesize // 4096' "$HDR")
+          BASE=$(jq -r '.base // 0' "$HDR")
+          BOARD=$(jq -r '.board // empty' "$HDR")
+          CMDLINE=$(jq -r '.cmdline // empty' "$HDR")
+          TAGS_OFFSET=$(jq -r '.tags_offset // empty' "$HDR")
+          RAMDISK_OFFSET=$(jq -r '.ramdisk_offset // empty' "$HDR")
+          KERNEL_OFFSET=$(jq -r '.kernel_offset // empty' "$HDR")
+          SECOND_OFFSET=$(jq -r '.second_offset // empty' "$HDR")
+          DTB_OFFSET=$(jq -r '.dtb_offset // empty' "$HDR")
+
+          # Choose kernel image we just built
+          KERNEL_IMG=out/arch/arm64/boot/Image.gz
+          test -f "$KERNEL_IMG" || { echo "Kernel image missing: $KERNEL_IMG"; exit 1; }
+
+          # Build the boot image with original header params + new kernel
+          MKARGS=( --header_version "$HVER"
+                   --kernel "$KERNEL_IMG"
+                   --ramdisk stock_boot/ramdisk
+                   --pagesize "$PAGESIZE"
+                   --output boot-KernelSU.img )
+
+          # Optional args if present
+          [ -n "$CMDLINE" ] && MKARGS+=( --cmdline "$CMDLINE" )
+          [ -n "$OS_VER" ] && MKARGS+=( --os_version "$OS_VER" )
+          [ -n "$OS_PATCH" ] && MKARGS+=( --os_patch_level "$OS_PATCH" )
+          [ "$BASE" != "0" ] && MKARGS+=( --base "$BASE" )
+          [ -n "$BOARD" ] && MKARGS+=( --board "$BOARD" )
+          [ -n "$TAGS_OFFSET" ] && MKARGS+=( --tags_offset "$TAGS_OFFSET" )
+          [ -n "$RAMDISK_OFFSET" ] && MKARGS+=( --ramdisk_offset "$RAMDISK_OFFSET" )
+          [ -n "$KERNEL_OFFSET" ] && MKARGS+=( --kernel_offset "$KERNEL_OFFSET" )
+          [ -n "$SECOND_OFFSET" ] && MKARGS+=( --second_offset "$SECOND_OFFSET" )
+          [ -n "$DTB_OFFSET" ] && MKARGS+=( --dtb_offset "$DTB_OFFSET" )
+          # If stock had a dtb file, include it
+          if [ -f stock_boot/dtb ]; then
+            MKARGS+=( --dtb stock_boot/dtb )
+          fi
+
+          mkbootimg "${MKARGS[@]}"
+
+          echo "Repacked boot image:"
+          ls -lah boot-KernelSU.img
 
       - name: Upload Boot Image
         uses: actions/upload-artifact@v4
