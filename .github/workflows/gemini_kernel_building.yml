@@ -146,32 +146,41 @@ jobs:
         run: |
           curl -Lf "${{ github.event.inputs.stock_boot_url }}" -o stock_boot.img
 
-      - name: Unpack Boot Image
+            - name: Unpack Boot Image
         run: |
           set -euxo pipefail
           mkdir -p stock_boot
-          unpackbootimg --boot_img stock_boot.img --out stock_boot
+          # Pipe the output to a log file for later parsing
+          unpackbootimg --boot_img stock_boot.img --out stock_boot 2>&1 | tee unpack.log
 
           echo "Unpacked header:"
-          cat stock_boot/header.json || true
+          cat unpack.log
+          
+          # Check for the extracted files
           ls -lah stock_boot
 
-      - name: Repack Boot Image
+      - name: Repack Boot Image with KernelSU
         run: |
           set -euxo pipefail
-          HDR=stock_boot/header.json
-          HVER=$(jq -r '.header_version // 0' "$HDR")
-          OS_VER=$(jq -r '.os_version // empty' "$HDR")
-          OS_PATCH=$(jq -r '.os_patch_level // empty' "$HDR")
-          PAGESIZE=$(jq -r '.pagesize // 4096' "$HDR")
-          BASE=$(jq -r '.base // 0' "$HDR")
-          BOARD=$(jq -r '.board // empty' "$HDR")
-          CMDLINE=$(jq -r '.cmdline // empty' "$HDR")
-          TAGS_OFFSET=$(jq -r '.tags_offset // empty' "$HDR")
-          RAMDISK_OFFSET=$(jq -r '.ramdisk_offset // empty' "$HDR")
-          KERNEL_OFFSET=$(jq -r '.kernel_offset // empty' "$HDR")
-          SECOND_OFFSET=$(jq -r '.second_offset // empty' "$HDR")
-          DTB_OFFSET=$(jq -r '.dtb_offset // empty' "$HDR")
+          
+          # Use grep and awk to extract values from the log file
+          get_val() { grep -m1 "$1" unpack.log | awk '{print $NF}'; }
+          get_str() { grep -m1 "$1" unpack.log | sed -E 's/^[^:]+: //'; }
+
+          HVER=$(get_val "boot image header version:") || HVER=3
+          OS_VER=$(get_val "os version:") || OS_VER=""
+          OS_PATCH=$(get_val "os patch level:") || OS_PATCH=""
+          PAGESIZE=$(get_val "page size:") || PAGESIZE=4096
+          BASE=$(get_val "base:") || BASE=0
+          BOARD=$(get_str "board name:") || BOARD=""
+          CMDLINE=$(get_str "command line args:") || CMDLINE=""
+          RAMDISK_OFFSET=$(get_val "ramdisk offset:") || RAMDISK_OFFSET=""
+          KERNEL_OFFSET=$(get_val "kernel offset:") || KERNEL_OFFSET=""
+          SECOND_OFFSET=$(get_val "second offset:") || SECOND_OFFSET=""
+          DTB_OFFSET=$(get_val "dtb offset:") || DTB_OFFSET=""
+          
+          # These offsets aren't always in the output, so handle them carefully
+          TAGS_OFFSET=$(get_val "tags offset:") || TAGS_OFFSET=""
 
           KERNEL_IMG=out/arch/arm64/boot/Image.gz
           test -f "$KERNEL_IMG" || { echo "Kernel image missing: $KERNEL_IMG"; exit 1; }
@@ -200,6 +209,7 @@ jobs:
 
           echo "Repacked boot image:"
           ls -lah boot-KernelSU.img
+
 
       - name: Upload Boot Image
         uses: actions/upload-artifact@v4
