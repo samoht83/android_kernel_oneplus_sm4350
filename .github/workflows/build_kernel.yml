@@ -1,10 +1,6 @@
 name: Build Kernel with APatch and SUFS
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 env:
