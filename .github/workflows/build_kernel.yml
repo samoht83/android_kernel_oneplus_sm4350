@@ -1,0 +1,219 @@
+name: Build Kernel with APatch and SUFS
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  CROSS_COMPILE: aarch64-linux-android-
+  CLANG_TRIPLE: aarch64-linux-gnu-
+  DEFCONFIG: holi-qgki_defconfig  # Change to your actual defconfig
+  THREADS: 8
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+        fetch-depth: 0
+
+    - name: Setup build environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libncurses-dev \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          bc \
+          git \
+          python3 \
+          device-tree-compiler \
+          lz4 \
+          lzop
+
+    - name: Setup AArch64 toolchain
+      uses: android-actions/setup-android-build-environment@v1
+      with:
+        ndk-version: "25.2.9519653"
+
+    - name: Add APatch
+      run: |
+        if [ ! -d "drivers/apatch" ]; then
+          git clone https://github.com/bmax121/APatch.git drivers/apatch
+        else
+          echo "APatch already exists, updating..."
+          cd drivers/apatch && git pull origin main && cd ../..
+        fi
+
+    - name: Add SUFS
+      run: |
+        if [ ! -d "fs/sufs" ]; then
+          git clone https://github.com/youesf/sufs.git fs/sufs
+        else
+          echo "SUFS already exists, updating..."
+          cd fs/sufs && git pull origin master && cd ../..
+        fi
+
+    - name: Configure kernel build files
+      run: |
+        # Add APatch to drivers/Makefile
+        if ! grep -q "apatch" drivers/Makefile; then
+          echo 'obj-$(CONFIG_APATCH) += apatch/' >> drivers/Makefile
+        fi
+
+        # Add SUFS to fs/Makefile
+        if ! grep -q "sufs" fs/Makefile; then
+          echo 'obj-$(CONFIG_SUFS) += sufs/' >> fs/Makefile
+        fi
+
+        # Add Kconfig entries
+        if ! grep -q "apatch" drivers/Kconfig; then
+          echo 'source "drivers/apatch/Kconfig"' >> drivers/Kconfig
+        fi
+
+        if ! grep -q "sufs" fs/Kconfig; then
+          echo 'source "fs/sufs/Kconfig"' >> fs/Kconfig
+        fi
+
+    - name: Update defconfig with APatch and SUFS options
+      run: |
+        # Create a script to update defconfig
+        cat > update_defconfig.sh << 'EOF'
+        #!/bin/bash
+        set -e
+
+        DEFCONFIG=$1
+        CONFIG_FILE="arch/arm64/configs/$DEFCONFIG"
+
+        # Backup original defconfig
+        cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+
+        # Add APatch configurations
+        echo "CONFIG_MODULES=y" >> "$CONFIG_FILE"
+        echo "CONFIG_MODULE_UNLOAD=y" >> "$CONFIG_FILE"
+        echo "CONFIG_KALLSYMS=y" >> "$CONFIG_FILE"
+        echo "CONFIG_KALLSYMS_ALL=y" >> "$CONFIG_FILE"
+        echo "CONFIG_OVERLAY_FS=y" >> "$CONFIG_FILE"
+        echo "CONFIG_APATCH=y" >> "$CONFIG_FILE"
+        echo "CONFIG_KPROBES=y" >> "$CONFIG_FILE"
+        echo "CONFIG_HAVE_KPROBES=y" >> "$CONFIG_FILE"
+        echo "CONFIG_KPROBE_EVENTS=y" >> "$CONFIG_FILE"
+
+        # Add SUFS configurations
+        echo "CONFIG_SUFS=y" >> "$CONFIG_FILE"
+        echo "CONFIG_MEMFD_CREATE=y" >> "$CONFIG_FILE"
+
+        # Add debug options (optional)
+        echo "CONFIG_DEBUG_FS=y" >> "$CONFIG_FILE"
+        echo "CONFIG_DEBUG_KERNEL=y" >> "$CONFIG_FILE"
+        echo "# CONFIG_DEBUG_INFO_REDUCED is not set" >> "$CONFIG_FILE"
+        echo "CONFIG_DEBUG_INFO=y" >> "$CONFIG_FILE"
+        EOF
+
+        chmod +x update_defconfig.sh
+        ./update_defconfig.sh "$DEFCONFIG"
+
+    - name: Set up environment variables
+      run: |
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+        echo "PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=aarch64-linux-android-" >> $GITHUB_ENV
+
+    - name: Configure kernel
+      run: |
+        make $DEFCONFIG
+        # Verify APatch and SUFS are enabled
+        grep -E "CONFIG_APATCH|CONFIG_SUFS" .config
+
+    - name: Build kernel
+      run: |
+        make -j$THREADS 2>&1 | tee build.log
+
+        # Check if build was successful
+        if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "BUILD_SUCCESS=true" >> $GITHUB_ENV
+        else
+          echo "BUILD_SUCCESS=false" >> $GITHUB_ENV
+          exit 1
+        fi
+
+    - name: Verify built symbols
+      run: |
+        # Check for APatch symbols
+        if nm arch/arm64/boot/Image.gz | grep -q "apatch"; then
+          echo "APatch symbols found in kernel"
+        else
+          echo "WARNING: No APatch symbols found"
+        fi
+
+        # Check for SUFS symbols
+        if nm arch/arm64/boot/Image.gz | grep -q "sufs"; then
+          echo "SUFS symbols found in kernel"
+        else
+          echo "WARNING: No SUFS symbols found"
+        fi
+
+    - name: Create artifacts
+      if: env.BUILD_SUCCESS == 'true'
+      run: |
+        # Create output directory
+        mkdir -p artifacts
+
+        # Copy built kernel image
+        cp arch/arm64/boot/Image.gz-dtb artifacts/
+
+        # Copy config
+        cp .config artifacts/config
+
+        # Copy build log
+        cp build.log artifacts/
+
+        # Create info file
+        echo "Build date: $(date)" > artifacts/build-info.txt
+        echo "Git commit: $(git rev-parse HEAD)" >> artifacts/build-info.txt
+        echo "Defconfig: $DEFCONFIG" >> artifacts/build-info.txt
+        echo "ARCH: $ARCH" >> artifacts/build-info.txt
+
+        # List modules (if any)
+        find . -name "*.ko" -exec cp {} artifacts/ \; 2>/dev/null || true
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-build
+        path: artifacts/
+        if-no-files-found: error
+
+    - name: Notify on success
+      if: success()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#builds'  # Optional: change to your Slack channel
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  docker-build:
+    runs-on: ubuntu-22.04
+    needs: build-kernel
+    if: always()  # Run even if build fails for cleanup
+
+    steps:
+    - name: Cleanup workspace
+      run: |
+        echo "Cleaning up..."
+        # This job ensures proper cleanup
