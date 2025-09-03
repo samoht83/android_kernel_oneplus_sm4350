@@ -25,11 +25,17 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout kernel source
+      - name: Checkout OnePlus SM4350 kernel
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          repository: samoht83/android_kernel_oneplus_sm4350
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: kernel
           fetch-depth: 0
+
+      - name: Init submodules
+        working-directory: kernel
+        run: git submodule update --init --recursive
 
       - name: Setup build environment
         run: |
@@ -70,11 +76,13 @@ jobs:
             kernel-${{ runner.os }}-
 
       - name: Add APatch and SUFS
+        working-directory: kernel
         run: |
           git clone https://github.com/bmax121/APatch.git drivers/apatch --depth=1 || (cd drivers/apatch && git pull)
           git clone https://github.com/youesf/sufs.git fs/sufs --depth=1 || (cd fs/sufs && git pull)
 
       - name: Configure kernel build files
+        working-directory: kernel
         run: |
           if ! grep -q "apatch/" drivers/Makefile; then
             echo 'obj-$(CONFIG_APATCH) += apatch/' >> drivers/Makefile
@@ -90,6 +98,7 @@ jobs:
           fi
 
       - name: Update defconfig
+        working-directory: kernel
         run: |
           CONFIG_FILE="arch/arm64/configs/${{ env.DEFCONFIG }}"
           echo "Updating $CONFIG_FILE"
@@ -111,13 +120,13 @@ EOF
 
       - name: Configure kernel
         run: |
-          make O=out ${{ env.DEFCONFIG }}
+          make -C kernel O=out ${{ env.DEFCONFIG }}
 
       - name: Build kernel
         id: build
         run: |
           set -o pipefail
-          make -C . O=out -j${{ env.THREADS }} CC=clang 2>&1 | tee build.log
+          make -C kernel O=out -j${{ env.THREADS }} CC=clang 2>&1 | tee build.log
 
       - name: Verify built symbols
         if: success()
