@@ -1,15 +1,13 @@
 name: Build Kernel with APatch and SUFS
 
 on:
-  workflow_dispatch:
-  push:
+  workflow_dispatch:   # manual run button
+  push:                # trigger on push to any branch
     branches:
-      - main
-      - master
-  pull_request:
+      - '**'
+  pull_request:        # trigger on PR targeting any branch
     branches:
-      - main
-      - master
+      - '**'
 
 env:
   ARCH: arm64
