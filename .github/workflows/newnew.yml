@@ -11,7 +11,6 @@ env:
   ARCH: arm64
   SUBARCH: arm64
   DEFCONFIG: holi-qgki_defconfig
-  CLANG_VERSION: clang-r450784d
   KERNEL_DIR: kernel
   OUT_DIR: out
 
@@ -31,32 +30,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git wget curl bc bison flex libssl-dev make zip unzip ccache rsync
 
-      # Cache Clang toolchain
-      - name: Cache Clang
+      # Cache LLVM toolchain to speed up builds
+      - name: Cache LLVM Toolchain
         uses: actions/cache@v4
         with:
-          path: prebuilts-clang
-          key: ${{ runner.os }}-clang-${{ env.CLANG_VERSION }}
+          path: clang
+          key: ${{ runner.os }}-llvm-14.0.6
 
-      - name: Download Clang Toolchain
+      - name: Download LLVM Toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-    wget https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.6/clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -O clang.tar.xz
-    mkdir clang
-    tar -xf clang.tar.xz -C clang --strip-components=1
-    echo "PATH=$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.6/clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -O clang.tar.xz
+          mkdir clang
+          tar -xf clang.tar.xz -C clang --strip-components=1
 
       - name: Add Clang to PATH
-        run: echo "PATH=$(pwd)/prebuilts-clang/bin:$PATH" >> $GITHUB_ENV
+        run: echo "PATH=$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
 
-      # Cache AnyKernel3 and patches
+      # Cache KernelSU, SUSFS, KPM, AnyKernel3
       - name: Cache Sources
         uses: actions/cache@v4
         with:
           path: |
-            AnyKernel3
             KernelSU
             susfs-src
             kpm-src
+            AnyKernel3
           key: ${{ runner.os }}-patches-v1
 
       - name: Apply KernelSU, SUSFS, and KPM
