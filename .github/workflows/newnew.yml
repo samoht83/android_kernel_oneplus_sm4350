@@ -1,0 +1,89 @@
+name: Build Kernel with KernelSU + SUSFS + KPM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+  DEFCONFIG: holi-qgki_defconfig
+  CLANG_VERSION: clang-r450784d
+  KERNEL_DIR: kernel
+  OUT_DIR: out
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: samoht83/android_kernel_oneplus_sm4350
+          ref: main
+
+      - name: Prepare Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget curl bc bison flex libssl-dev make zip unzip ccache
+
+      - name: Download Clang Toolchain
+        run: |
+          mkdir -p ~/clang
+          cd ~/clang
+          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
+          tar -xf clang.tar.gz
+          echo "PATH=$HOME/clang/bin:$PATH" >> $GITHUB_ENV
+
+      - name: Apply KernelSU, SUSFS, and KPM
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          # KernelSU
+          git clone https://github.com/tiann/KernelSU.git ksusrc
+          bash ksusrc/kernel/setup.sh || true
+
+          # SUSFS patch
+          git clone https://github.com/tiann/susfs.git susfs-src
+          rsync -av susfs-src/ ./
+
+          # KPM patch
+          git clone https://github.com/tiann/KernelPatchManager.git kpm-src
+          rsync -av kpm-src/ ./
+
+      - name: Configure Kernel
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          mkdir -p ${{ env.OUT_DIR }}
+          make O=${{ env.OUT_DIR }} ${{ env.DEFCONFIG }}
+          # Enable KSU, SUSFS, KPM
+          echo "CONFIG_KSU=y" >> ${{ env.OUT_DIR }}/.config
+          echo "CONFIG_SUSFS=y" >> ${{ env.OUT_DIR }}/.config
+          echo "CONFIG_KPM=y" >> ${{ env.OUT_DIR }}/.config
+          make O=${{ env.OUT_DIR }} olddefconfig
+
+      - name: Build Kernel
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          PATH=~/clang/bin:$PATH \
+          make O=${{ env.OUT_DIR }} -j$(nproc) \
+            CC=clang \
+            LD=ld.lld \
+            LLVM=1 \
+            LLVM_IAS=1
+
+      - name: Prepare AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          cp ${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          cd AnyKernel3
+          zip -r9 KernelSU-SUSFS-KPM-${{ github.sha }}.zip *
+
+      - name: Upload Kernel Zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-SUSFS-KPM
+          path: AnyKernel3/*.zip
