@@ -2,49 +2,84 @@ name: Build Kernel with KernelSU + SUSFS + KPM
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-
-env:
-  ARCH: arm64
-  SUBARCH: arm64
-  DEFCONFIG: holi-qgki_defconfig
-  KERNEL_DIR: kernel
-  OUT_DIR: out
+    inputs:
+      stock_boot_url:
+        description: 'URL to the stock boot.img for repacking'
+        required: true
+        default: 'https://mirrorbits.lineageos.org/full/dre/20250808/boot.img'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50.tar.gz
+      GCC_URL: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz
+      MKBOOTIMG_URL: https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz
 
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
-          repository: samoht83/android_kernel_oneplus_sm4350
-          ref: ${{ github.event.repository.default_branch }}
+          repository: LineageOS/android_kernel_oneplus_sm4350
+          ref: lineage-22.2
+          fetch-depth: 1
 
-      - name: Prepare Build Environment
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y git wget curl bc bison flex libssl-dev make zip unzip ccache rsync
+          sudo apt-get install -y \
+            git curl unzip python3 python3-venv jq ccache lz4 \
+            libarchive-tools build-essential libncurses5-dev libssl-dev flex bison \
+            libelf-dev bc dwarves lld llvm clang
 
-      # Cache LLVM toolchain to speed up builds
-      - name: Cache LLVM Toolchain
+      - name: Cache Android 14 Clang Toolchain
+        id: cache-clang
         uses: actions/cache@v4
         with:
-          path: clang
-          key: ${{ runner.os }}-llvm-14.0.6
+          path: ${{ runner.temp }}/clang-android-14
+          key: ${{ runner.os }}-clang-${{ hashFiles('**/.github/workflows/*.yml') }}
 
-      - name: Download LLVM Toolchain
-        if: steps.cache.outputs.cache-hit != 'true'
+      - name: Download and Setup Clang Toolchain
+        if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.6/clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-20.04.tar.xz -O clang.tar.xz          mkdir clang
-          tar -xf clang.tar.xz -C clang --strip-components=1
+          echo "Downloading Android 14 Clang..."
+          mkdir -p ${{ runner.temp }}/clang-android-14
+          curl -L ${{ env.CLANG_URL }} | tar -xz -C ${{ runner.temp }}/clang-android-14
 
-      - name: Add Clang to PATH
-        run: echo "PATH=$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
+      - name: Download and Setup Binutils & mkbootimg
+        run: |
+          echo "Fetching GCC binutils..."
+          mkdir -p ${{ runner.temp }}/binutils
+          curl -L "${{ env.GCC_URL }}" | tar -xz -C ${{ runner.temp }}/binutils
+
+          echo "Fetching mkbootimg/unpack_bootimg scripts..."
+          mkdir -p ${{ runner.temp }}/mkbootimg
+          curl -L "${{ env.MKBOOTIMG_URL }}" | tar -xz -C ${{ runner.temp }}/mkbootimg
+
+          # Create simple shims for mkbootimg and unpackbootimg
+          mkdir -p ${{ runner.temp }}/bin
+          cat > ${{ runner.temp }}/bin/mkbootimg <<'EOF'
+          #!/usr/bin/env bash
+          exec python3 "${{ runner.temp }}/mkbootimg/mkbootimg.py" "$@"
+          EOF
+
+          cat > ${{ runner.temp }}/bin/unpackbootimg <<'EOF'
+          #!/usr/bin/env bash
+          exec python3 "${{ runner.temp }}/mkbootimg/unpack_bootimg.py" "$@"
+          EOF
+          chmod +x ${{ runner.temp }}/bin/mkbootimg ${{ runner.temp }}/bin/unpackbootimg
+
+      - name: Configure PATH for All Tools
+        run: |
+          echo "${{ runner.temp }}/clang-android-14/bin" >> $GITHUB_PATH
+          echo "${{ runner.temp }}/binutils/bin" >> $GITHUB_PATH
+          echo "${{ runner.temp }}/bin" >> $GITHUB_PATH
+
+      - name: Enable ccache
+        run: |
+          ccache --max-size=5G
+          ccache --zero-stats
 
       # Cache KernelSU, SUSFS, KPM, AnyKernel3
       - name: Cache Sources
