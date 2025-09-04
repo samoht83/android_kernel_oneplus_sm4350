@@ -33,11 +33,10 @@ jobs:
 
       - name: Download Clang Toolchain
         run: |
-          mkdir -p ~/clang
-          cd ~/clang
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/${{ env.CLANG_VERSION }}.tar.gz -O clang.tar.gz
-          tar -xf clang.tar.gz
-          echo "PATH=$HOME/clang/bin:$PATH" >> $GITHUB_ENV
+    git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts-clang
+    cd prebuilts-clang
+    git checkout android13-release   # contains clang-r450784d 1
+    echo "PATH=$(pwd)/bin:$PATH" >> $GITHUB_ENV
 
       - name: Apply KernelSU, SUSFS, and KPM
         run: |
