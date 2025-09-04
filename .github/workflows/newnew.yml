@@ -39,11 +39,11 @@ jobs:
           key: ${{ runner.os }}-clang-${{ env.CLANG_VERSION }}
 
       - name: Download Clang Toolchain
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts-clang
-          cd prebuilts-clang
-          git checkout android13-release   # contains clang-r450784d
+    wget https://github.com/llvm/llvm-project/releases/download/llvmorg-14.0.6/clang+llvm-14.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz -O clang.tar.xz
+    mkdir clang
+    tar -xf clang.tar.xz -C clang --strip-components=1
+    echo "PATH=$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
 
       - name: Add Clang to PATH
         run: echo "PATH=$(pwd)/prebuilts-clang/bin:$PATH" >> $GITHUB_ENV
