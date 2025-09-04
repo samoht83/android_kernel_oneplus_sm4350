@@ -24,34 +24,62 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: samoht83/android_kernel_oneplus_sm4350
-          ref: ${{ github.event.repository.default_branch }}   # auto-detects default branch
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Prepare Build Environment
         run: |
           sudo apt-get update
-          sudo apt-get install -y git wget curl bc bison flex libssl-dev make zip unzip ccache
+          sudo apt-get install -y git wget curl bc bison flex libssl-dev make zip unzip ccache rsync
+
+      # Cache Clang toolchain
+      - name: Cache Clang
+        uses: actions/cache@v4
+        with:
+          path: prebuilts-clang
+          key: ${{ runner.os }}-clang-${{ env.CLANG_VERSION }}
 
       - name: Download Clang Toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-    git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts-clang
-    cd prebuilts-clang
-    git checkout android13-release   # contains clang-r450784d 1
-    echo "PATH=$(pwd)/bin:$PATH" >> $GITHUB_ENV
+          git clone https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 prebuilts-clang
+          cd prebuilts-clang
+          git checkout android13-release   # contains clang-r450784d
+
+      - name: Add Clang to PATH
+        run: echo "PATH=$(pwd)/prebuilts-clang/bin:$PATH" >> $GITHUB_ENV
+
+      # Cache AnyKernel3 and patches
+      - name: Cache Sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            AnyKernel3
+            KernelSU
+            susfs-src
+            kpm-src
+          key: ${{ runner.os }}-patches-v1
 
       - name: Apply KernelSU, SUSFS, and KPM
         run: |
           cd ${{ env.KERNEL_DIR }}
+
           # KernelSU
-          git clone https://github.com/tiann/KernelSU.git ksusrc
-          bash ksusrc/kernel/setup.sh || true
+          if [ ! -d "../KernelSU" ]; then
+            git clone https://github.com/tiann/KernelSU.git ../KernelSU
+          fi
+          bash ../KernelSU/kernel/setup.sh || true
 
           # SUSFS
-          git clone https://github.com/tiann/susfs.git susfs-src
-          rsync -av susfs-src/ ./
+          if [ ! -d "../susfs-src" ]; then
+            git clone https://github.com/tiann/susfs.git ../susfs-src
+          fi
+          rsync -av ../susfs-src/ ./
 
           # KPM
-          git clone https://github.com/tiann/KernelPatchManager.git kpm-src
-          rsync -av kpm-src/ ./
+          if [ ! -d "../kpm-src" ]; then
+            git clone https://github.com/tiann/KernelPatchManager.git ../kpm-src
+          fi
+          rsync -av ../kpm-src/ ./
 
       - name: Configure Kernel
         run: |
@@ -66,7 +94,6 @@ jobs:
       - name: Build Kernel
         run: |
           cd ${{ env.KERNEL_DIR }}
-          PATH=~/clang/bin:$PATH \
           make O=${{ env.OUT_DIR }} -j$(nproc) \
             CC=clang \
             LD=ld.lld \
@@ -75,7 +102,9 @@ jobs:
 
       - name: Prepare AnyKernel3
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          if [ ! -d "AnyKernel3" ]; then
+            git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          fi
           cp ${{ env.OUT_DIR }}/arch/arm64/boot/Image.gz-dtb AnyKernel3/
           cd AnyKernel3
           zip -r9 KernelSU-SUSFS-KPM-${{ github.sha }}.zip *
