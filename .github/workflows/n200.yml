@@ -107,20 +107,10 @@ jobs:
           fi
           echo "✅ KernelSU files are present"
 
-      - name: Cache SUSFS module
+      - name: Fetch SUSFS module
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
-        uses: actions/cache@v4
-        with:
-          path: kernel_platform/drivers/susfs
-          key: susfs-${{ github.event.inputs.SUSFS_CI }}-${{ github.sha }}
-
-      - name: Download and extract SUSFS safely
-        if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
-        shell: bash
         run: |
           SUSFS_TYPE="${{ github.event.inputs.SUSFS_CI }}"
-          echo "Selected SUSFS download type: $SUSFS_TYPE"
-
           SUSFS_CI_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SUSFS/main/ci/susfs_module.tar.gz"
           SUSFS_RELEASE_URL="https://github.com/SukiSU-Ultra/SUSFS/releases/latest/download/susfs_module.tar.gz"
 
@@ -134,21 +124,29 @@ jobs:
 
             if file "$TEMP_FILE" | grep -q "gzip compressed data"; then
               tar xzvf "$TEMP_FILE" -C kernel_platform/drivers/susfs
-              echo "SUSFS extracted successfully from $url."
+              echo "✅ SUSFS extracted successfully from $url."
               return 0
             else
-              echo "Downloaded file is not a valid gzip archive from $url."
+              echo "⚠️ Downloaded file is not a valid gzip archive from $url."
               return 1
             fi
           }
 
           if [[ "$SUSFS_TYPE" == "CI" ]]; then
             if ! download_and_extract "$SUSFS_CI_URL"; then
-              echo "Falling back to Release URL..."
-              download_and_extract "$SUSFS_RELEASE_URL" || { echo "Both CI and Release downloads failed."; exit 1; }
+              echo "Falling back to Release..."
+              if ! download_and_extract "$SUSFS_RELEASE_URL"; then
+                echo "Falling back to git clone..."
+                git clone --depth=1 https://github.com/SukiSU-Ultra/SUSFS temp_susfs
+                cp -r temp_susfs/* kernel_platform/drivers/susfs/
+              fi
             fi
           elif [[ "$SUSFS_TYPE" == "Release" ]]; then
-            download_and_extract "$SUSFS_RELEASE_URL" || { echo "Release download failed."; exit 1; }
+            if ! download_and_extract "$SUSFS_RELEASE_URL"; then
+              echo "Release failed, falling back to git clone..."
+              git clone --depth=1 https://github.com/SukiSU-Ultra/SUSFS temp_susfs
+              cp -r temp_susfs/* kernel_platform/drivers/susfs/
+            fi
           fi
 
           rm -f "$TEMP_FILE"
@@ -198,6 +196,7 @@ jobs:
             SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
           fi
           echo "Using kernel suffix: $SUFFIX"
+          # Inject suffix into setlocalversion scripts
 
       - name: Prepare AnyKernel3 zip
         run: |
