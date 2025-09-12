@@ -87,8 +87,8 @@ jobs:
       - name: Download Clang 14 if cache missed
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          mkdir -p $(dirname ${{ env.CLANG_PATH }})
-          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 ${{ env.CLANG_PATH }}
+          mkdir -p $(dirname "${{ env.CLANG_PATH }}")
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 "${{ env.CLANG_PATH }}"
 
       - name: Cache KernelSU
         id: cache-ksu
@@ -100,7 +100,7 @@ jobs:
       - name: Clone KernelSU if cache missed
         if: steps.cache-ksu.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 -b ${{ env.KSU_VERSION }} https://github.com/tiann/KernelSU
+          git clone --depth=1 -b "${{ env.KSU_VERSION }}" https://github.com/tiann/KernelSU
 
       - name: Integrate KernelSU
         run: |
@@ -178,12 +178,11 @@ jobs:
 
       - name: Configure kernel options
         run: |
-          # Create initial config
           make O=out ARCH=${{ env.ARCH }} ${{ env.DEFCONFIG }}
-          
+
           # Enable KernelSU
           scripts/config --file out/.config --enable CONFIG_KSU
-          
+
           # Configure KernelSU hook method
           HOOK_METHOD="${{ github.event.inputs.HOOK }}"
           case "$HOOK_METHOD" in
@@ -197,28 +196,27 @@ jobs:
               scripts/config --file out/.config --enable CONFIG_KSU_MANUAL_HOOK
               ;;
           esac
-          
+
           # Enable SUSFS if not disabled
           if [[ "${{ github.event.inputs.SUSFS_CI }}" != "NoN" ]]; then
             scripts/config --file out/.config --enable CONFIG_SUSFS
             scripts/config --file out/.config --enable CONFIG_SUSFS_MODULE
           fi
-          
+
           # Apply additional build flags
           if [[ "${{ github.event.inputs.KPM }}" == "true" ]]; then
             scripts/config --file out/.config --enable CONFIG_KPM
           fi
-          
+
           if [[ "${{ github.event.inputs.SCHED }}" == "true" ]]; then
             scripts/config --file out/.config --enable CONFIG_SCHED_DEBUG
           fi
-          
+
           if [[ "${{ github.event.inputs.ZRAM }}" == "true" ]]; then
             scripts/config --file out/.config --enable CONFIG_ZRAM_MULTI_COMP
             scripts/config --file out/.config --enable CONFIG_ZRAM_DEF_COMP_LZ4
           fi
-          
-          # Regenerate config
+
           make O=out ARCH=${{ env.ARCH }} olddefconfig
 
       - name: Apply custom/random kernel suffix
@@ -227,28 +225,28 @@ jobs:
             SUFFIX="${{ github.event.inputs.SUFFIX }}"
           else
             RANDOM_DIGIT=$(shuf -i 0-10 -n 1)
-            RANDOM_HASH=$(head /dev/urandom | tr -dc a-f0-9 | head -c 14)
-            SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
+            RANDOM_HASH=$(head -c 14 /dev/urandom | tr -dc a-f0-9)
+            SUFFIX="${RANDOM_DIG}-o-g${RANDOM_HASH}"
           fi
           echo "KERNEL_SUFFIX=$SUFFIX" >> $GITHUB_ENV
           echo "Using kernel suffix: $SUFFIX"
-          
+
           # Apply suffix to localversion
           echo "-$SUFFIX" > localversion
 
       - name: Build kernel
         run: |
           export PATH=$GITHUB_WORKSPACE/${{ env.CLANG_PATH }}/bin:$PATH
-          
+
           # Determine number of jobs
           if [[ "${{ github.event.inputs.FAST_BUILD }}" == "true" ]]; then
             JOBS=$(nproc)
           else
             JOBS=$(($(nproc) / 2))
           fi
-          
+
           echo "Building with $JOBS jobs..."
-          
+
           make -j$JOBS O=out \
             ARCH=${{ env.ARCH }} \
             SUBARCH=${{ env.SUBARCH }} \
@@ -274,11 +272,11 @@ jobs:
       - name: Prepare AnyKernel3 zip
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3
-          
+
           # Copy kernel artifacts
           cp out/arch/${{ env.ARCH }}/boot/Image.gz-dtb AnyKernel3/
           cp out/arch/${{ env.ARCH }}/boot/dtbo.img AnyKernel3/ || echo "No dtbo.img found, skipping..."
-          
+
           # Configure AnyKernel3 for OnePlus Nord N200
           cat > AnyKernel3/anykernel.sh << 'EOF'
           # AnyKernel3 Ramdisk Mod Script
@@ -314,7 +312,7 @@ jobs:
 
           write_boot;
           EOF
-          
+
           # Create flashable zip
           cd AnyKernel3
           zip -r9 "KernelSU-N200-${{ env.KERNEL_SUFFIX }}.zip" ./*
@@ -338,7 +336,7 @@ jobs:
           echo "For now, creating a placeholder file..."
           # Replace the URL below with actual stock boot.img download link
           # wget -O boot/stock-boot.img "https://actual-download-link-for-nord-n200-boot.img"
-          
+
           # Placeholder - remove this when you have actual boot.img
           touch boot/stock-boot.img
           echo "📝 Placeholder created. Replace with actual stock boot.img download."
@@ -347,18 +345,18 @@ jobs:
         run: |
           if [ -s boot/stock-boot.img ]; then
             echo "Stock boot.img available, creating custom boot image..."
-            
+
             # Extract stock boot
             mkdir -p boot/unpack
             python3 -m mkbootimg unpack --boot_img boot/stock-boot.img --out boot/unpack/ || {
               echo "Failed to unpack stock boot.img - using kernel image only"
               cp out/arch/${{ env.ARCH }}/boot/Image.gz-dtb boot/
             }
-            
+
             if [ -d boot/unpack ]; then
               # Replace kernel in unpacked boot
               cp out/arch/${{ env.ARCH }}/boot/Image.gz-dtb boot/unpack/kernel
-              
+
               # Repack boot image
               python3 -m mkbootimg pack --kernel boot/unpack/kernel \
                 --ramdisk boot/unpack/ramdisk \
@@ -380,7 +378,7 @@ jobs:
 
       - name: Upload boot image (if created)
         uses: actions/upload-artifact@v4
-        if: hashFiles('boot/KernelSU-N200-*-boot.img') != ''
+        if: ${{ hashFiles('boot/KernelSU-N200-*-boot.img') != '' }}
         with:
           name: KernelSU-N200-Boot-Image
           path: boot/KernelSU-N200-*-boot.img
