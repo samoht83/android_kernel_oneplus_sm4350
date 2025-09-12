@@ -1,4 +1,4 @@
-name: Build OnePlus_SukiSU Ultra (Nord N200)
+name: Build KernelSU Kernel for OnePlus Nord N200
 
 on:
   workflow_dispatch:
@@ -72,40 +72,50 @@ jobs:
           fetch-depth: 0
 
       - name: Free up disk space
-        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          sudo apt-get clean
+          df -h
 
       - name: Cache Clang
+        id: cache-clang
         uses: actions/cache@v4
         with:
           path: ${{ env.CLANG_PATH }}
-          key: clang-r416183b
+          key: clang-r416183b-${{ runner.os }}
 
       - name: Download Clang 14 if cache missed
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 ${{ env.CLANG_PATH }}
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p $(dirname ${{ env.CLANG_PATH }})
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 ${{ env.CLANG_PATH }}
 
       - name: Cache KernelSU
+        id: cache-ksu
         uses: actions/cache@v4
         with:
           path: KernelSU
-          key: ksu-${{ env.KSU_VERSION }}
+          key: ksu-${{ env.KSU_VERSION }}-${{ runner.os }}
 
       - name: Clone KernelSU if cache missed
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: git clone --depth=1 -b ${{ env.KSU_VERSION }} https://github.com/tiann/KernelSU
+        if: steps.cache-ksu.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 -b ${{ env.KSU_VERSION }} https://github.com/tiann/KernelSU
 
       - name: Integrate KernelSU
         run: |
-          mkdir -p kernel_platform/drivers/kernelsu
-          cp -r KernelSU/kernel/* kernel_platform/drivers/kernelsu/
+          mkdir -p drivers/kernelsu
+          cp -r KernelSU/kernel/* drivers/kernelsu/
+          echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
 
       - name: Verify KernelSU Integration
         run: |
-          if [ ! -d kernel_platform/drivers/kernelsu ] || [ -z "$(ls -A kernel_platform/drivers/kernelsu)" ]; then
-            echo "❌ KernelSU files not found in kernel_platform/drivers/kernelsu"
+          if [ ! -d drivers/kernelsu ] || [ -z "$(ls -A drivers/kernelsu)" ]; then
+            echo "❌ KernelSU files not found in drivers/kernelsu"
             exit 1
           fi
           echo "✅ KernelSU files are present"
+          ls -la drivers/kernelsu/
 
       - name: Fetch SUSFS module
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
@@ -114,20 +124,23 @@ jobs:
           SUSFS_CI_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SUSFS/main/ci/susfs_module.tar.gz"
           SUSFS_RELEASE_URL="https://github.com/SukiSU-Ultra/SUSFS/releases/latest/download/susfs_module.tar.gz"
 
-          mkdir -p kernel_platform/drivers/susfs
+          mkdir -p drivers/susfs
           TEMP_FILE=$(mktemp)
 
           download_and_extract() {
             local url="$1"
             echo "Attempting to download SUSFS from $url ..."
-            curl -L "$url" -o "$TEMP_FILE" || return 1
-
-            if file "$TEMP_FILE" | grep -q "gzip compressed data"; then
-              tar xzvf "$TEMP_FILE" -C kernel_platform/drivers/susfs
-              echo "✅ SUSFS extracted successfully from $url."
-              return 0
+            if curl -L "$url" -o "$TEMP_FILE" --fail; then
+              if file "$TEMP_FILE" | grep -q "gzip compressed data"; then
+                tar xzvf "$TEMP_FILE" -C drivers/susfs
+                echo "✅ SUSFS extracted successfully from $url."
+                return 0
+              else
+                echo "⚠️ Downloaded file is not a valid gzip archive from $url."
+                return 1
+              fi
             else
-              echo "⚠️ Downloaded file is not a valid gzip archive from $url."
+              echo "⚠️ Failed to download from $url."
               return 1
             fi
           }
@@ -138,14 +151,16 @@ jobs:
               if ! download_and_extract "$SUSFS_RELEASE_URL"; then
                 echo "Falling back to git clone..."
                 git clone --depth=1 https://github.com/SukiSU-Ultra/SUSFS temp_susfs
-                cp -r temp_susfs/* kernel_platform/drivers/susfs/
+                cp -r temp_susfs/* drivers/susfs/
+                rm -rf temp_susfs
               fi
             fi
           elif [[ "$SUSFS_TYPE" == "Release" ]]; then
             if ! download_and_extract "$SUSFS_RELEASE_URL"; then
               echo "Release failed, falling back to git clone..."
               git clone --depth=1 https://github.com/SukiSU-Ultra/SUSFS temp_susfs
-              cp -r temp_susfs/* kernel_platform/drivers/susfs/
+              cp -r temp_susfs/* drivers/susfs/
+              rm -rf temp_susfs
             fi
           fi
 
@@ -154,87 +169,246 @@ jobs:
       - name: Verify SUSFS Module
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
         run: |
-          if [ ! -d kernel_platform/drivers/susfs ] || [ -z "$(ls -A kernel_platform/drivers/susfs)" ]; then
-            echo "❌ SUSFS module missing in kernel_platform/drivers/susfs"
+          if [ ! -d drivers/susfs ] || [ -z "$(ls -A drivers/susfs)" ]; then
+            echo "❌ SUSFS module missing in drivers/susfs"
             exit 1
           fi
           echo "✅ SUSFS module is present"
+          ls -la drivers/susfs/
 
-      - name: Enable SUSFS in kernel config
-        if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
+      - name: Configure kernel options
         run: |
-          cd kernel_platform
-          scripts/config --enable CONFIG_SUSFS
-          scripts/config --enable CONFIG_SUSFS_MODULE
-
-      - name: Apply KPM, SCHED, ZRAM, HOOK, FAST_BUILD flags
-        run: |
-          echo "FAST_BUILD=${{ github.event.inputs.FAST_BUILD }}"
-          echo "KPM=${{ github.event.inputs.KPM }}"
-          echo "SCHED=${{ github.event.inputs.SCHED }}"
-          echo "ZRAM=${{ github.event.inputs.ZRAM }}"
-          echo "HOOK=${{ github.event.inputs.HOOK }}"
-
-      - name: Build kernel
-        run: |
-          PATH=$GITHUB_WORKSPACE/${{ env.CLANG_PATH }}/bin:$PATH
-          make O=out ${{ env.DEFCONFIG }}
-          make -j$(nproc) O=out \
-            ARCH=$ARCH SUBARCH=$SUBARCH \
-            CROSS_COMPILE=$CROSS_COMPILE \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            CC=clang
+          # Create initial config
+          make O=out ARCH=${{ env.ARCH }} ${{ env.DEFCONFIG }}
+          
+          # Enable KernelSU
+          scripts/config --file out/.config --enable CONFIG_KSU
+          
+          # Configure KernelSU hook method
+          HOOK_METHOD="${{ github.event.inputs.HOOK }}"
+          case "$HOOK_METHOD" in
+            "kprobe")
+              scripts/config --file out/.config --enable CONFIG_KSU_KPROBE_HOOK
+              ;;
+            "tracepoint")
+              scripts/config --file out/.config --enable CONFIG_KSU_TRACEPOINT_HOOK
+              ;;
+            "manual")
+              scripts/config --file out/.config --enable CONFIG_KSU_MANUAL_HOOK
+              ;;
+          esac
+          
+          # Enable SUSFS if not disabled
+          if [[ "${{ github.event.inputs.SUSFS_CI }}" != "NoN" ]]; then
+            scripts/config --file out/.config --enable CONFIG_SUSFS
+            scripts/config --file out/.config --enable CONFIG_SUSFS_MODULE
+          fi
+          
+          # Apply additional build flags
+          if [[ "${{ github.event.inputs.KPM }}" == "true" ]]; then
+            scripts/config --file out/.config --enable CONFIG_KPM
+          fi
+          
+          if [[ "${{ github.event.inputs.SCHED }}" == "true" ]]; then
+            scripts/config --file out/.config --enable CONFIG_SCHED_DEBUG
+          fi
+          
+          if [[ "${{ github.event.inputs.ZRAM }}" == "true" ]]; then
+            scripts/config --file out/.config --enable CONFIG_ZRAM_MULTI_COMP
+            scripts/config --file out/.config --enable CONFIG_ZRAM_DEF_COMP_LZ4
+          fi
+          
+          # Regenerate config
+          make O=out ARCH=${{ env.ARCH }} olddefconfig
 
       - name: Apply custom/random kernel suffix
         run: |
-          cd kernel_platform
           if [[ "${{ github.event.inputs.SUFFIX }}" != "" ]]; then
             SUFFIX="${{ github.event.inputs.SUFFIX }}"
           else
-            RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
-            RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
+            RANDOM_DIGIT=$(shuf -i 0-10 -n 1)
+            RANDOM_HASH=$(head /dev/urandom | tr -dc a-f0-9 | head -c 14)
             SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
           fi
+          echo "KERNEL_SUFFIX=$SUFFIX" >> $GITHUB_ENV
           echo "Using kernel suffix: $SUFFIX"
-          # Inject suffix into setlocalversion scripts
+          
+          # Apply suffix to localversion
+          echo "-$SUFFIX" > localversion
+
+      - name: Build kernel
+        run: |
+          export PATH=$GITHUB_WORKSPACE/${{ env.CLANG_PATH }}/bin:$PATH
+          
+          # Determine number of jobs
+          if [[ "${{ github.event.inputs.FAST_BUILD }}" == "true" ]]; then
+            JOBS=$(nproc)
+          else
+            JOBS=$(($(nproc) / 2))
+          fi
+          
+          echo "Building with $JOBS jobs..."
+          
+          make -j$JOBS O=out \
+            ARCH=${{ env.ARCH }} \
+            SUBARCH=${{ env.SUBARCH }} \
+            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            CLANG_TRIPLE=${{ env.CLANG_TRIPLE }} \
+            CC=clang \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip
+
+      - name: Check build artifacts
+        run: |
+          if [ ! -f out/arch/${{ env.ARCH }}/boot/Image.gz-dtb ]; then
+            echo "❌ Kernel image not found!"
+            exit 1
+          fi
+          echo "✅ Kernel built successfully"
+          ls -la out/arch/${{ env.ARCH }}/boot/
 
       - name: Prepare AnyKernel3 zip
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
-          cp out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
-          sed -i 's/device.name1=.*/device.name1=N200/' AnyKernel3/anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=Nord-N200/' AnyKernel3/anykernel.sh
-          sed -i 's/device.name3=.*/device.name3=OnePlus-N200/' AnyKernel3/anykernel.sh
-          sed -i 's/device.name4=.*/device.name4=holi/' AnyKernel3/anykernel.sh
-          cd AnyKernel3 && zip -r9 KernelSU-N200.zip ./*
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3
+          
+          # Copy kernel artifacts
+          cp out/arch/${{ env.ARCH }}/boot/Image.gz-dtb AnyKernel3/
+          cp out/arch/${{ env.ARCH }}/boot/dtbo.img AnyKernel3/ || echo "No dtbo.img found, skipping..."
+          
+          # Configure AnyKernel3 for OnePlus Nord N200
+          cat > AnyKernel3/anykernel.sh << 'EOF'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=KernelSU Nord N200 by GitHub Actions
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=N200
+          device.name2=Nord-N200
+          device.name3=OnePlus-N200
+          device.name4=holi
+          device.name5=OnePlus Nord N200 5G
+          supported.versions=11-14
+          supported.patchlevels=
+          '; }
+
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+
+          chmod 755 $bin/*;
+          ui_print "$(file_getprop /tmp/anykernel/anykernel.sh kernel.string)";
+
+          dump_boot;
+
+          write_boot;
+          EOF
+          
+          # Create flashable zip
+          cd AnyKernel3
+          zip -r9 "KernelSU-N200-${{ env.KERNEL_SUFFIX }}.zip" ./*
 
       - name: Upload AnyKernel3 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-N200-zip
-          path: AnyKernel3/KernelSU-N200.zip
+          name: KernelSU-N200-AnyKernel3
+          path: AnyKernel3/KernelSU-N200-*.zip
 
-      - name: Download stock boot.img
+      - name: Install boot image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip android-tools-mkbootimg
+          pip3 install --user mkbootimg
+
+      - name: Download stock boot.img (placeholder)
         run: |
           mkdir -p boot
-          wget -O boot/stock-boot.img "https://example.com/holi-stock-boot.img"  # Replace with real URL
+          echo "⚠️ Please replace this with actual stock boot.img URL for OnePlus Nord N200"
+          echo "For now, creating a placeholder file..."
+          # Replace the URL below with actual stock boot.img download link
+          # wget -O boot/stock-boot.img "https://actual-download-link-for-nord-n200-boot.img"
+          
+          # Placeholder - remove this when you have actual boot.img
+          touch boot/stock-boot.img
+          echo "📝 Placeholder created. Replace with actual stock boot.img download."
 
-      - name: Install mkbootimg tools
-        run: sudo apt install -y python3-pip unzip && sudo pip install mkbootimg
-
-      - name: Unpack stock boot
-        run: mkbootimg unpack boot/stock-boot.img -o boot/unpack/
-
-      - name: Repack boot with new kernel
+      - name: Create boot.img (when stock boot is available)
         run: |
-          cp out/arch/arm64/boot/Image.gz-dtb boot/unpack/
-          mkbootimg repack -k boot/unpack/Image.gz-dtb \
-            -r boot/unpack/ramdisk.img \
-            -o boot/KernelSU-N200-boot.img
+          if [ -s boot/stock-boot.img ]; then
+            echo "Stock boot.img available, creating custom boot image..."
+            
+            # Extract stock boot
+            mkdir -p boot/unpack
+            python3 -m mkbootimg unpack --boot_img boot/stock-boot.img --out boot/unpack/ || {
+              echo "Failed to unpack stock boot.img - using kernel image only"
+              cp out/arch/${{ env.ARCH }}/boot/Image.gz-dtb boot/
+            }
+            
+            if [ -d boot/unpack ]; then
+              # Replace kernel in unpacked boot
+              cp out/arch/${{ env.ARCH }}/boot/Image.gz-dtb boot/unpack/kernel
+              
+              # Repack boot image
+              python3 -m mkbootimg pack --kernel boot/unpack/kernel \
+                --ramdisk boot/unpack/ramdisk \
+                --cmdline "$(cat boot/unpack/cmdline)" \
+                --base "$(cat boot/unpack/base)" \
+                --kernel_offset "$(cat boot/unpack/kernel_offset)" \
+                --ramdisk_offset "$(cat boot/unpack/ramdisk_offset)" \
+                --second_offset "$(cat boot/unpack/second_offset)" \
+                --tags_offset "$(cat boot/unpack/tags_offset)" \
+                --pagesize "$(cat boot/unpack/pagesize)" \
+                --os_version "$(cat boot/unpack/os_version)" \
+                --os_patch_level "$(cat boot/unpack/os_patch_level)" \
+                --header_version "$(cat boot/unpack/header_version)" \
+                --out "boot/KernelSU-N200-${{ env.KERNEL_SUFFIX }}-boot.img"
+            fi
+          else
+            echo "No stock boot.img available, skipping boot image creation"
+          fi
 
-      - name: Upload repacked boot.img
+      - name: Upload boot image (if created)
         uses: actions/upload-artifact@v4
+        if: hashFiles('boot/KernelSU-N200-*-boot.img') != ''
         with:
-          name: KernelSU-N200-boot
-          path: boot/KernelSU-N200-boot.img
+          name: KernelSU-N200-Boot-Image
+          path: boot/KernelSU-N200-*-boot.img
+
+      - name: Generate build summary
+        run: |
+          echo "## 🎉 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "- **Device**: OnePlus Nord N200" >> $GITHUB_STEP_SUMMARY
+          echo "- **SUSFS**: ${{ github.event.inputs.SUSFS_CI }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Hook Method**: ${{ github.event.inputs.HOOK }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel Suffix**: ${{ env.KERNEL_SUFFIX }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Fast Build**: ${{ github.event.inputs.FAST_BUILD }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **KPM**: ${{ github.event.inputs.KPM }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **SCHED**: ${{ github.event.inputs.SCHED }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **ZRAM**: ${{ github.event.inputs.ZRAM }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ AnyKernel3 flashable zip created" >> $GITHUB_STEP_SUMMARY
+          if [ -f boot/KernelSU-N200-*-boot.img ]; then
+            echo "- ✅ Boot image created" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- ⚠️ Boot image not created (no stock boot.img)" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation Instructions" >> $GITHUB_STEP_SUMMARY
+          echo "1. Download the AnyKernel3 zip from artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "2. Boot to custom recovery (TWRP/OrangeFox)" >> $GITHUB_STEP_SUMMARY
+          echo "3. Flash the zip file" >> $GITHUB_STEP_SUMMARY
+          echo "4. Reboot and install KernelSU Manager app" >> $GITHUB_STEP_SUMMARY
