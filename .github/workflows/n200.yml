@@ -95,7 +95,17 @@ jobs:
         run: git clone --depth=1 -b ${{ env.KSU_VERSION }} https://github.com/tiann/KernelSU
 
       - name: Integrate KernelSU
-        run: cp -r KernelSU/kernel drivers/kernelsu
+        run: |
+          mkdir -p kernel_platform/drivers/kernelsu
+          cp -r KernelSU/kernel/* kernel_platform/drivers/kernelsu/
+
+      - name: Verify KernelSU Integration
+        run: |
+          if [ ! -d kernel_platform/drivers/kernelsu ] || [ -z "$(ls -A kernel_platform/drivers/kernelsu)" ]; then
+            echo "❌ KernelSU files not found in kernel_platform/drivers/kernelsu"
+            exit 1
+          fi
+          echo "✅ KernelSU files are present"
 
       - name: Fetch SUSFS module
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
@@ -113,6 +123,15 @@ jobs:
           mkdir -p kernel_platform/drivers/susfs
           curl -L "$SUSFS_URL" | tar xz -C kernel_platform/drivers/susfs
 
+      - name: Verify SUSFS Module
+        if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
+        run: |
+          if [ ! -d kernel_platform/drivers/susfs ] || [ -z "$(ls -A kernel_platform/drivers/susfs)" ]; then
+            echo "❌ SUSFS module missing in kernel_platform/drivers/susfs"
+            exit 1
+          fi
+          echo "✅ SUSFS module is present"
+
       - name: Enable SUSFS in kernel config
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
         run: |
@@ -127,7 +146,6 @@ jobs:
           echo "SCHED=${{ github.event.inputs.SCHED }}"
           echo "ZRAM=${{ github.event.inputs.ZRAM }}"
           echo "HOOK=${{ github.event.inputs.HOOK }}"
-          # Apply patches or config options here if needed
 
       - name: Build kernel
         run: |
