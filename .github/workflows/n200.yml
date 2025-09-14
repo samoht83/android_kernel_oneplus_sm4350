@@ -8,19 +8,13 @@ on:
         description: "SUSFS module download method"
         required: true
         default: CI
-        options:
-          - CI
-          - Release
-          - NoN
+        options: [CI, Release, NoN]
       HOOK:
         type: choice
         description: "Hook selection"
         required: true
         default: manual
-        options:
-          - kprobe
-          - manual
-          - tracepoint
+        options: [kprobe, manual, tracepoint]
       KSU_META:
         type: string
         description: "Branch name / Custom version (leave empty for default)"
@@ -96,14 +90,15 @@ jobs:
 
       - name: Integrate KernelSU
         run: |
-          rm -rf kernel_platform/drivers/kernelsu
-          cp -r KernelSU/kernel kernel_platform/drivers/kernelsu
-          echo "obj-\$(CONFIG_KSU) += kernelsu/" >> kernel_platform/drivers/Makefile
+          rm -rf drivers/kernelsu
+          mkdir -p drivers/kernelsu
+          cp -r KernelSU/kernel/* drivers/kernelsu/
+          echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
 
       - name: Verify KernelSU Integration
         run: |
-          if [ ! -d kernel_platform/drivers/kernelsu ] || [ -z "$(ls -A kernel_platform/drivers/kernelsu)" ]; then
-            echo "❌ KernelSU files not found in kernel_platform/drivers/kernelsu"
+          if [ ! -d drivers/kernelsu ] || [ -z "$(ls -A drivers/kernelsu)" ]; then
+            echo "❌ KernelSU files not found in drivers/kernelsu"
             exit 1
           fi
           echo "✅ KernelSU integrated successfully"
@@ -116,7 +111,7 @@ jobs:
 
           SUSFS_CI_URL="https://raw.githubusercontent.com/SukiSU-Ultra/SUSFS/main/ci/susfs_module.tar.gz"
           SUSFS_RELEASE_URL="https://github.com/SukiSU-Ultra/SUSFS/releases/latest/download/susfs_module.tar.gz"
-          mkdir -p kernel_platform/drivers/susfs
+          mkdir -p drivers/susfs
           TEMP_FILE=$(mktemp)
 
           download_and_extract() {
@@ -124,7 +119,7 @@ jobs:
             echo "Attempting to download SUSFS from $url ..."
             curl -L "$url" -o "$TEMP_FILE" || return 1
             if file "$TEMP_FILE" | grep -q "gzip compressed data"; then
-              tar xzvf "$TEMP_FILE" -C kernel_platform/drivers/susfs
+              tar xzvf "$TEMP_FILE" -C drivers/susfs
               echo "✅ SUSFS extracted successfully from $url."
               return 0
             else
@@ -139,14 +134,14 @@ jobs:
               if ! download_and_extract "$SUSFS_RELEASE_URL"; then
                 echo "Falling back to git clone..."
                 git clone --depth=1 https://github.com/SukiSU-Ultra/SUSFS temp_susfs
-                cp -r temp_susfs/* kernel_platform/drivers/susfs/
+                cp -r temp_susfs/* drivers/susfs/
               fi
             fi
           elif [[ "$SUSFS_TYPE" == "Release" ]]; then
             if ! download_and_extract "$SUSFS_RELEASE_URL"; then
               echo "Release failed, falling back to git clone..."
               git clone --depth=1 https://github.com/SukiSU-Ultra/SUSFS temp_susfs
-              cp -r temp_susfs/* kernel_platform/drivers/susfs/
+              cp -r temp_susfs/* drivers/susfs/
             fi
           fi
 
@@ -155,8 +150,8 @@ jobs:
       - name: Verify SUSFS Module
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
         run: |
-          if [ ! -d kernel_platform/drivers/susfs ] || [ -z "$(ls -A kernel_platform/drivers/susfs)" ]; then
-            echo "❌ SUSFS module missing in kernel_platform/drivers/susfs"
+          if [ ! -d drivers/susfs ] || [ -z "$(ls -A drivers/susfs)" ]; then
+            echo "❌ SUSFS module missing in drivers/susfs"
             exit 1
           fi
           echo "✅ SUSFS module integrated successfully"
@@ -164,17 +159,8 @@ jobs:
       - name: Enable SUSFS in kernel config
         if: ${{ github.event.inputs.SUSFS_CI != 'NoN' }}
         run: |
-          cd kernel_platform
           scripts/config --enable CONFIG_SUSFS
           scripts/config --enable CONFIG_SUSFS_MODULE
-
-      - name: Apply KPM, SCHED, ZRAM, HOOK, FAST_BUILD flags
-        run: |
-          echo "FAST_BUILD=${{ github.event.inputs.FAST_BUILD }}"
-          echo "KPM=${{ github.event.inputs.KPM }}"
-          echo "SCHED=${{ github.event.inputs.SCHED }}"
-          echo "ZRAM=${{ github.event.inputs.ZRAM }}"
-          echo "HOOK=${{ github.event.inputs.HOOK }}"
 
       - name: Build kernel
         run: |
@@ -185,18 +171,6 @@ jobs:
             CROSS_COMPILE=$CROSS_COMPILE \
             CLANG_TRIPLE=$CLANG_TRIPLE \
             CC=clang
-
-      - name: Apply custom/random kernel suffix
-        run: |
-          cd kernel_platform
-          if [[ "${{ github.event.inputs.SUFFIX }}" != "" ]]; then
-            SUFFIX="${{ github.event.inputs.SUFFIX }}"
-          else
-            RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
-            RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
-            SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
-          fi
-          echo "Using kernel suffix: $SUFFIX"
 
       - name: Prepare AnyKernel3 zip
         run: |
@@ -215,13 +189,13 @@ jobs:
           name: KernelSU-N200-zip
           path: AnyKernel3/KernelSU-N200.zip
 
+      - name: Install mkbootimg tools
+        run: sudo apt install -y python3-pip unzip && sudo pip install mkbootimg
+
       - name: Download stock boot.img
         run: |
           mkdir -p boot
           wget -O boot/stock-boot.img "https://example.com/holi-stock-boot.img"  # Replace with real URL
-
-      - name: Install mkbootimg tools
-        run: sudo apt install -y python3-pip unzip && sudo pip install mkbootimg
 
       - name: Unpack stock boot
         run: mkbootimg unpack boot/stock-boot.img -o boot/unpack/
