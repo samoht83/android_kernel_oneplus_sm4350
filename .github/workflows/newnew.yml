@@ -90,41 +90,51 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/KernelSU
-            ${{ github.workspace }}/susfs-src
             ${{ github.workspace }}/kpm-src
             ${{ github.workspace }}/AnyKernel3
-          key: ${{ runner.os }}-patches-v1
+          key: ${{ runner.os }}-patches-v2
 
-      - name: Apply KernelSU, SUSFS, and KPM
+      - name: Apply KernelSU and KPM
         run: |
           cd ${{ github.workspace }}
 
-          # KernelSU
+          # KernelSU (includes SUSFS support in newer versions)
           if [ ! -d "KernelSU" ]; then
             git clone https://github.com/tiann/KernelSU.git KernelSU
           fi
           bash KernelSU/kernel/setup.sh || true
 
-          # SUSFS
-          if [ ! -d "susfs-src" ]; then
-            git clone https://github.com/tiann/susfs.git susfs-src
-          fi
-          rsync -av susfs-src/ ./
-
           # KPM
           if [ ! -d "kpm-src" ]; then
-            git clone https://github.com/tiann/KernelPatchManager.git kpm-src
+            echo "Cloning KernelPatchManager..."
+            git clone https://github.com/bmax121/KernelPatchModule.git kpm-src || \
+            git clone https://gitlab.com/simonpunk/KernelPatchModule.git kpm-src || \
+            echo "Warning: KPM repository not found, continuing without it..."
           fi
-          rsync -av kpm-src/ ./
+          
+          if [ -d "kpm-src" ]; then
+            rsync -av kpm-src/ ./
+          fi
 
       - name: Configure Kernel
         run: |
           cd ${{ env.KERNEL_DIR }}
           mkdir -p ${{ env.OUT_DIR }}
           make O=${{ env.OUT_DIR }} ${{ env.DEFCONFIG }}
+          
+          # Enable KernelSU
           echo "CONFIG_KSU=y" >> ${{ env.OUT_DIR }}/.config
-          echo "CONFIG_SUSFS=y" >> ${{ env.OUT_DIR }}/.config
-          echo "CONFIG_KPM=y" >> ${{ env.OUT_DIR }}/.config
+          
+          # Enable SUSFS if available in KernelSU
+          if grep -q "CONFIG_KSU_SUSFS" KernelSU/kernel/Kconfig 2>/dev/null; then
+            echo "CONFIG_KSU_SUSFS=y" >> ${{ env.OUT_DIR }}/.config
+          fi
+          
+          # Enable KPM if available
+          if [ -d "kpm-src" ]; then
+            echo "CONFIG_KPM=y" >> ${{ env.OUT_DIR }}/.config
+          fi
+          
           make O=${{ env.OUT_DIR }} olddefconfig
 
       - name: Build Kernel
