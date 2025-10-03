@@ -16,6 +16,9 @@ jobs:
       CLANG_URL: https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50.tar.gz
       GCC_URL: https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz
       MKBOOTIMG_URL: https://android.googlesource.com/platform/system/tools/mkbootimg/+archive/refs/heads/master.tar.gz
+      KERNEL_DIR: ${{ github.workspace }}
+      OUT_DIR: ${{ github.workspace }}/out
+      DEFCONFIG: vendor/lahaina-qgki_defconfig
 
     steps:
       - name: Checkout Kernel Source
@@ -31,7 +34,7 @@ jobs:
           sudo apt-get install -y \
             git curl unzip python3 python3-venv jq ccache lz4 \
             libarchive-tools build-essential libncurses5-dev libssl-dev flex bison \
-            libelf-dev bc dwarves lld llvm clang
+            libelf-dev bc dwarves lld llvm clang rsync
 
       - name: Cache Android 14 Clang Toolchain
         id: cache-clang
@@ -86,36 +89,33 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            KernelSU
-            susfs-src
-            kpm-src
-            AnyKernel3
+            ${{ github.workspace }}/KernelSU
+            ${{ github.workspace }}/susfs-src
+            ${{ github.workspace }}/kpm-src
+            ${{ github.workspace }}/AnyKernel3
           key: ${{ runner.os }}-patches-v1
 
       - name: Apply KernelSU, SUSFS, and KPM
         run: |
-          cd 
+          cd ${{ github.workspace }}
 
-# KernelSU
-if [ ! -d "KernelSU" ]; then
-  git clone https://github.com/tiann/KernelSU.git KernelSU
-fi
-bash KernelSU/kernel/setup.sh || true
-
-# SUSFS
-if [ ! -d "susfs-src" ]; then
-  git clone https://github.com/tiann/susfs.git susfs-src
-fi
-rsync -av susfs-src/ ./
-
-# KPM
-if [ ! -d "kpm-src" ]; then
-  git clone https://github.com/tiann/KernelPatchManager.git kpm-src
-fi
-rsync -av kpm-src/ ./" ]; then
-            git clone https://github.com/tiann/KernelPatchManager.git ../kpm-src
+          # KernelSU
+          if [ ! -d "KernelSU" ]; then
+            git clone https://github.com/tiann/KernelSU.git KernelSU
           fi
-          rsync -av ../kpm-src/ ./
+          bash KernelSU/kernel/setup.sh || true
+
+          # SUSFS
+          if [ ! -d "susfs-src" ]; then
+            git clone https://github.com/tiann/susfs.git susfs-src
+          fi
+          rsync -av susfs-src/ ./
+
+          # KPM
+          if [ ! -d "kpm-src" ]; then
+            git clone https://github.com/tiann/KernelPatchManager.git kpm-src
+          fi
+          rsync -av kpm-src/ ./
 
       - name: Configure Kernel
         run: |
@@ -138,6 +138,7 @@ rsync -av kpm-src/ ./" ]; then
 
       - name: Prepare AnyKernel3
         run: |
+          cd ${{ github.workspace }}
           if [ ! -d "AnyKernel3" ]; then
             git clone https://github.com/osm0sis/AnyKernel3.git AnyKernel3
           fi
