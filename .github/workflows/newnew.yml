@@ -80,7 +80,7 @@ jobs:
         run: |
           ccache --max-size=5G
           ccache --zero-stats
-
+      
       # Cache KernelSU, SUSFS, KPM, AnyKernel3
       - name: Cache Sources
         uses: actions/cache@v4
@@ -94,22 +94,25 @@ jobs:
 
       - name: Apply KernelSU, SUSFS, and KPM
         run: |
-          cd ${{ env.KERNEL_DIR }}
+          cd 
 
-          # KernelSU
-          if [ ! -d "../KernelSU" ]; then
-            git clone https://github.com/tiann/KernelSU.git ../KernelSU
-          fi
-          bash ../KernelSU/kernel/setup.sh || true
+# KernelSU
+if [ ! -d "KernelSU" ]; then
+  git clone https://github.com/tiann/KernelSU.git KernelSU
+fi
+bash KernelSU/kernel/setup.sh || true
 
-          # SUSFS
-          if [ ! -d "../susfs-src" ]; then
-            git clone https://github.com/tiann/susfs.git ../susfs-src
-          fi
-          rsync -av ../susfs-src/ ./
+# SUSFS
+if [ ! -d "susfs-src" ]; then
+  git clone https://github.com/tiann/susfs.git susfs-src
+fi
+rsync -av susfs-src/ ./
 
-          # KPM
-          if [ ! -d "../kpm-src" ]; then
+# KPM
+if [ ! -d "kpm-src" ]; then
+  git clone https://github.com/tiann/KernelPatchManager.git kpm-src
+fi
+rsync -av kpm-src/ ./" ]; then
             git clone https://github.com/tiann/KernelPatchManager.git ../kpm-src
           fi
           rsync -av ../kpm-src/ ./
