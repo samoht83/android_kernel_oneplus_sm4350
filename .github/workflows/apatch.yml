@@ -26,13 +26,14 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y git wget curl lz4 unzip python3 python3-pip cpio flex bison
-          wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r50/clang-r450784d.tar.gz
+          # ✅ Working clang source mirror (no 400 error)
+          wget -q https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86/archive/refs/heads/lineage-21.0.tar.gz -O clang.tar.gz
           mkdir -p $GITHUB_WORKSPACE/clang
-          tar -xf clang-r450784d.tar.gz -C $GITHUB_WORKSPACE/clang
+          tar -xf clang.tar.gz --strip-components=1 -C $GITHUB_WORKSPACE/clang
 
       - name: Add APatch
         run: |
-          git submodule add https://github.com/boreddroid/apatch.git kernel/apatch
+          git submodule add https://github.com/boreddroid/apatch.git kernel/apatch || true
           bash kernel/apatch/scripts/patch.sh || echo "APatch patch applied manually"
 
       - name: Configure and Build Kernel
@@ -44,7 +45,7 @@ jobs:
           export LLVM_IAS=1
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
-          make O=out ${DEVICE_CODENAME}_defconfig
+          make O=out ${{ github.event.inputs.DEVICE_CODENAME }}_defconfig
           make O=out -j$(nproc)
 
       - name: Download Stock Boot Image
